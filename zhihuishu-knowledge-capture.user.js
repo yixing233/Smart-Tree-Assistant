@@ -1407,6 +1407,7 @@
     eyeOff: ['M3 3l18 18', 'M10.7 5.1A10.9 10.9 0 0 1 12 5c6.5 0 10 7 10 7a18.6 18.6 0 0 1-4.2 5.1', 'M6.6 6.6A18.7 18.7 0 0 0 2 12s3.5 7 10 7c1.9 0 3.5-.5 5-1.2', 'M9.9 9.9a3 3 0 0 0 4.2 4.2'],
     chevronRight: ['M9 6l6 6-6 6'],
     chevronLeft: ['M15 6l-6 6 6 6'],
+    externalLink: ['M14 3h7v7', 'M10 14 21 3', 'M21 14v7H3V3h7'],
     refresh: ['M3 12a9 9 0 0 1 15.5-6.4L21 8', 'M21 3v5h-5', 'M21 12a9 9 0 0 1-15.5 6.4L3 16', 'M3 21v-5h5'],
     copy: ['M9 9h11v11H9z', 'M4 15H3V4h11v1'],
     download: ['M12 3v12', 'M7 10l5 5 5-5', 'M4 20h16']
@@ -1508,6 +1509,27 @@
       if (Number.isFinite(pointTotal) && pointTotal > 0) {
         total += pointTotal;
         finished += Number.isFinite(pointFinished) ? pointFinished : 0;
+      }
+    }
+    if (total <= 0) return '';
+    return `${finished}/${total}`;
+  }
+
+  function getRequiredProgressRatio(result) {
+    if (!result) return '';
+    const byPoints = getRequiredProgressSummary(result.points);
+    if (byPoints) return byPoints;
+
+    let finished = 0;
+    let total = 0;
+    for (const mod of result.modules || []) {
+      for (const unit of mod.units || []) {
+        for (const point of unit.points || []) {
+          for (const resource of point.requiredResources || []) {
+            total += 1;
+            if (Number(resource && resource.studyStatus) === 1) finished += 1;
+          }
+        }
       }
     }
     if (total <= 0) return '';
@@ -2591,6 +2613,10 @@
     let positionTimer = 0;
     let syncTimer = 0;
     let lastAutoResumeAt = 0;
+    const progressBarH = 14;
+    const progressTrackPadding = 10;
+    const knobRadiusDefault = 8;
+    const knobRadiusHover = 10;
 
     function formatTime(seconds) {
       const sec = Number(seconds);
@@ -2629,11 +2655,11 @@
       if (!ctx) return;
 
       const w = progressCanvas.width;
-      const barH = 14;
+      const barH = progressBarH;
       const y = Math.floor((progressCanvas.height - barH) / 2);
-      const knobR = knobHover ? 7 : 6;
-      const trackLeft = knobR;
-      const trackRight = w - knobR;
+      const knobR = knobHover ? knobRadiusHover : knobRadiusDefault;
+      const trackLeft = progressTrackPadding;
+      const trackRight = w - progressTrackPadding;
       const trackW = Math.max(1, trackRight - trackLeft);
       const trackRadius = barH / 2;
 
@@ -2739,9 +2765,8 @@
     function seekByPointer(clientX) {
       const rect = progressCanvas.getBoundingClientRect();
       if (!rect || rect.width <= 0) return;
-      const knobR = 6;
-      const innerWidth = Math.max(1, rect.width - knobR * 2);
-      const x = Math.max(0, Math.min(innerWidth, clientX - rect.left - knobR));
+      const innerWidth = Math.max(1, rect.width - progressTrackPadding * 2);
+      const x = Math.max(0, Math.min(innerWidth, clientX - rect.left - progressTrackPadding));
       const ratio = Math.max(0, Math.min(1, x / innerWidth));
       seekByRate(ratio);
     }
@@ -2758,13 +2783,14 @@
       const duration = Number(currentVideo.duration);
       const current = Number(currentVideo.currentTime || 0);
       const ratio = Number.isFinite(duration) && duration > 0 ? Math.max(0, Math.min(1, current / duration)) : 0;
-      const knobR = 6;
-      const innerWidth = Math.max(1, rect.width - knobR * 2);
-      const knobX = rect.left + knobR + innerWidth * ratio;
+      const knobR = knobHover ? knobRadiusHover : knobRadiusDefault;
+      const innerWidth = Math.max(1, rect.width - progressTrackPadding * 2);
+      const knobX = rect.left + progressTrackPadding + innerWidth * ratio;
       const knobY = rect.top + rect.height / 2;
       const dx = clientX - knobX;
       const dy = clientY - knobY;
-      const isHover = dx * dx + dy * dy <= 13 * 13;
+      const hitRadius = knobR + 4;
+      const isHover = dx * dx + dy * dy <= hitRadius * hitRadius;
       if (isHover !== knobHover) {
         knobHover = isHover;
         drawProgress();
@@ -3145,15 +3171,18 @@
       dot.className = 'zs-loader-dot';
       automationOverlayLoader.appendChild(dot);
     }
+    const automationOverlayStatusRow = document.createElement('div');
+    automationOverlayStatusRow.style.cssText = 'display:inline-flex;align-items:center;justify-content:center;gap:10px;';
     const automationOverlayText = document.createElement('div');
     automationOverlayText.textContent = '正在执行自动化进程';
-    automationOverlayText.style.cssText = 'color:#e2e8f0;font-weight:700;font-size:20px;letter-spacing:.5px;text-shadow:0 2px 8px rgba(0,0,0,.45);';
+    automationOverlayText.style.cssText = 'color:#e2e8f0;font-weight:700;font-size:20px;letter-spacing:.5px;text-shadow:0 2px 8px rgba(0,0,0,.45);line-height:1.2;';
     const automationOverlayProgress = document.createElement('div');
-    automationOverlayProgress.textContent = '学习进度: 加载中...';
-    automationOverlayProgress.style.cssText = 'margin-top:8px;color:#cbd5e1;font-weight:600;font-size:14px;line-height:1.4;letter-spacing:.2px;text-shadow:0 1px 4px rgba(0,0,0,.35);';
+    automationOverlayProgress.textContent = '--%';
+    automationOverlayProgress.style.cssText = 'color:#93c5fd;font-weight:800;font-size:20px;line-height:1.2;letter-spacing:.4px;text-shadow:0 2px 8px rgba(0,0,0,.45);min-width:56px;text-align:left;';
+    automationOverlayStatusRow.appendChild(automationOverlayText);
+    automationOverlayStatusRow.appendChild(automationOverlayProgress);
     automationOverlayBox.appendChild(automationOverlayLoader);
-    automationOverlayBox.appendChild(automationOverlayText);
-    automationOverlayBox.appendChild(automationOverlayProgress);
+    automationOverlayBox.appendChild(automationOverlayStatusRow);
     automationOverlay.appendChild(automationOverlayBox);
     document.body.appendChild(automationOverlay);
 
@@ -3181,6 +3210,33 @@
     const title = document.createElement('div');
     title.textContent = '智慧树助手';
     title.style.cssText = 'font-weight:700;font-size:13px;color:#0f172a;line-height:1.2;';
+    const titleBar = document.createElement('div');
+    titleBar.style.cssText = 'display:flex;align-items:center;justify-content:space-between;gap:8px;';
+
+    const btnIssues = document.createElement('button');
+    btnIssues.type = 'button';
+    setButtonIconLabel(btnIssues, 'externalLink', '问题反馈', 13);
+    btnIssues.style.cssText = [
+      'border:1px solid #c7d2fe',
+      'background:#eef2ff',
+      'color:#3730a3',
+      'padding:5px 9px',
+      'border-radius:9px',
+      'cursor:pointer',
+      'font-weight:700',
+      'line-height:1.1',
+      'display:inline-flex',
+      'align-items:center',
+      'justify-content:center',
+      'gap:6px',
+      'font-size:11px',
+      'flex:0 0 auto'
+    ].join(';');
+    applyHoverAccent(btnIssues, { hoverBorderColor: '#818cf8', hoverShadow: '0 0 0 2px rgba(99,102,241,.14)' });
+
+    const feedbackHint = document.createElement('div');
+    feedbackHint.textContent = '问题反馈: 使用中如遇异常，可点击右上角“问题反馈”前往 GitHub Issues 提交。';
+    feedbackHint.style.cssText = 'color:#475569;font-size:11px;line-height:1.45;margin-top:-2px;';
 
     const toolbar = document.createElement('div');
     toolbar.style.cssText = 'display:grid;grid-template-columns:repeat(3,minmax(0,1fr));gap:8px;padding:2px 0 4px 0;';
@@ -3469,27 +3525,19 @@
     function buildOverlayProgressText() {
       const summary = lastResult ? getCurrentResourceSummary(lastResult) : null;
       if (!summary) {
-        if (autoTargetUid) return '学习进度: 正在定位目标资源...';
-        return '学习进度: 正在识别当前资源...';
+        if (autoTargetUid) return '--%';
+        return '--%';
       }
-      const main = getCurrentLearningProgressText(summary);
-      const detail = getCurrentLearningDurationText(summary);
-      let text = detail ? `${main} · ${detail}` : main;
+      if (Number(summary.studyStatus) === 1) return '100%';
       if (summary.isVideo) {
-        const activeVideo = findVisibleVideoForOverlay();
-        if (activeVideo) {
-          const current = Number(activeVideo.currentTime || 0);
-          const duration = Number(activeVideo.duration || 0);
-          if (Number.isFinite(duration) && duration > 0) {
-            text = `学习进度: ${Math.max(0, Math.min(100, Math.round(current / duration * 100)))}% · 学习时长: ${formatSeconds(current) || '0秒'} / ${formatSeconds(duration) || '0秒'}`;
-          }
-        }
+        const percent = getVideoProgressPercent(summary);
+        if (percent !== null) return `${percent}%`;
       }
-      return text;
+      return '0%';
     }
 
     function updateOverlayProgressText() {
-      automationOverlayProgress.textContent = autoRunning ? buildOverlayProgressText() : '学习进度: 未运行';
+      automationOverlayProgress.textContent = autoRunning ? buildOverlayProgressText() : '--%';
     }
 
     function clearOverlayProgressTimer() {
@@ -3869,15 +3917,31 @@
 
     function renderNextPending(result) {
       const item = findLatestUnfinishedResource(result && result.modules);
-      if (!item) {
-        nextPending.textContent = '最近未完成资源: 暂无';
-        return;
-      }
       nextPending.innerHTML = '';
+
+      const headerRow = document.createElement('div');
+      headerRow.style.cssText = 'display:flex;align-items:center;justify-content:space-between;gap:8px;margin-bottom:4px;';
 
       const title = document.createElement('div');
       title.textContent = '最近未完成资源';
-      title.style.cssText = 'color:#dc2626;font-weight:700;margin-bottom:4px;line-height:1.3;font-size:14px;';
+      title.style.cssText = 'color:#dc2626;font-weight:700;line-height:1.3;font-size:14px;';
+
+      const progress = document.createElement('div');
+      const progressRatio = getRequiredProgressRatio(result);
+      progress.textContent = progressRatio ? `总进度 ${progressRatio}` : '总进度 --/--';
+      progress.style.cssText = 'color:#1d4ed8;font-weight:700;line-height:1.3;font-size:12px;flex:0 0 auto;';
+
+      headerRow.appendChild(title);
+      headerRow.appendChild(progress);
+      nextPending.appendChild(headerRow);
+
+      if (!item) {
+        const empty = document.createElement('div');
+        empty.textContent = '暂无';
+        empty.style.cssText = 'color:#64748b;font-size:12px;line-height:1.45;';
+        nextPending.appendChild(empty);
+        return;
+      }
 
       const path = document.createElement('div');
       const pathParts = [item.moduleName, item.unitName, item.pointName].filter(Boolean);
@@ -3919,7 +3983,6 @@
       tagsWrap.style.cssText = 'display:flex;flex:0 0 auto;align-items:center;justify-content:flex-end;';
       appendTag(tagsWrap, item.typeText, 'type');
 
-      nextPending.appendChild(title);
       nextPending.appendChild(path);
       resourceRow.appendChild(name);
       resourceRow.appendChild(tagsWrap);
@@ -4096,6 +4159,9 @@
       updateMaskToggleButton();
       updateOverlayVisibility();
     });
+    btnIssues.addEventListener('click', () => {
+      window.open('https://github.com/yixing233/Smart-Tree-Assistant/issues', '_blank', 'noopener,noreferrer');
+    });
 
     toolbar.appendChild(btnRefresh);
     toolbar.appendChild(btnCopy);
@@ -4123,7 +4189,10 @@
     detailView.appendChild(treeWrap);
     detailView.appendChild(backOverviewCard);
 
-    panel.appendChild(title);
+    titleBar.appendChild(title);
+    titleBar.appendChild(btnIssues);
+    panel.appendChild(titleBar);
+    panel.appendChild(feedbackHint);
     panel.appendChild(toolbar);
     switchTrack.appendChild(overviewView);
     switchTrack.appendChild(detailView);
