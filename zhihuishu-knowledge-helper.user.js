@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         智慧树助手
 // @namespace    https://ai-smart-course-student-pro.zhihuishu.com/
-// @version      0.5.2
+// @version      0.5.3
 // @description  一个基于智慧树AI课程平台开发的脚本, 能够自动完成所有必学内容, 如有bug, 请前往GitHub提交issues.
 // @author       xchengb
 // @match        https://ai-smart-course-student-pro.zhihuishu.com/learnPage/*
@@ -35,7 +35,7 @@
   const VIDEO_CONTROL_AUTO_MUTE_PREFIX = "zs-knowledge-video-auto-mute";
   const VIDEO_SEEK_HINT_PREFIX = "zs-knowledge-video-seek-hint";
   const AUTOMATION_MASK_PREFIX = "zs-knowledge-automation-mask";
-  const SCRIPT_CURRENT_VERSION = "0.5.2";
+  const SCRIPT_CURRENT_VERSION = "0.5.3";
   const SCRIPT_UPDATE_URL =
     "https://raw.githubusercontent.com/yixing233/Smart-Tree-Assistant/main/zhihuishu-knowledge-helper.user.js";
   const SCRIPT_DOWNLOAD_URL = SCRIPT_UPDATE_URL;
@@ -2726,55 +2726,44 @@
     const targetUrl = String(url || "").trim();
     if (!targetUrl) throw new Error("缺少更新地址");
     const timeoutMs = Math.max(1000, Number(options.timeoutMs || 12000));
+    if (typeof GM_xmlhttpRequest === "function") {
+      const gmText = await new Promise((resolve, reject) => {
+        GM_xmlhttpRequest({
+          method: "GET",
+          url: targetUrl,
+          timeout: timeoutMs,
+          onload: (res) => {
+            const status = Number((res && res.status) || 0);
+            if (status >= 200 && status < 300) {
+              resolve(String((res && res.responseText) || ""));
+              return;
+            }
+            reject(new Error(`HTTP ${status || "network"}`));
+          },
+          onerror: () => reject(new Error("网络错误")),
+          ontimeout: () => reject(new Error("请求超时")),
+        });
+      });
+      if (typeof gmText === "string") return gmText;
+    }
     const controller =
       typeof AbortController !== "undefined" ? new AbortController() : null;
     const timer = controller
       ? window.setTimeout(() => controller.abort(), timeoutMs)
       : 0;
     try {
-      try {
-        const res = await fetch(targetUrl, {
-          method: "GET",
-          mode: "cors",
-          credentials: "omit",
-          cache: "no-store",
-          headers: {
-            Accept:
-              "text/plain, text/javascript, application/javascript;q=0.9, */*;q=0.8",
-            "Cache-Control": "no-cache",
-          },
-          signal: controller ? controller.signal : undefined,
-        });
-        const text = await res.text();
-        if (!res.ok) {
-          throw new Error(`HTTP ${res.status}`);
-        }
-        return text;
-      } catch (fetchErr) {
-        if (typeof GM_xmlhttpRequest !== "function") throw fetchErr;
-        return await new Promise((resolve, reject) => {
-          GM_xmlhttpRequest({
-            method: "GET",
-            url: targetUrl,
-            headers: {
-              Accept:
-                "text/plain, text/javascript, application/javascript;q=0.9, */*;q=0.8",
-              "Cache-Control": "no-cache",
-            },
-            timeout: timeoutMs,
-            onload: (res) => {
-              const status = Number((res && res.status) || 0);
-              if (status >= 200 && status < 300) {
-                resolve(String((res && res.responseText) || ""));
-                return;
-              }
-              reject(new Error(`HTTP ${status || "network"}`));
-            },
-            onerror: () => reject(new Error("网络错误")),
-            ontimeout: () => reject(new Error("请求超时")),
-          });
-        });
+      const res = await fetch(targetUrl, {
+        method: "GET",
+        mode: "cors",
+        credentials: "omit",
+        cache: "no-store",
+        signal: controller ? controller.signal : undefined,
+      });
+      const text = await res.text();
+      if (!res.ok) {
+        throw new Error(`HTTP ${res.status}`);
       }
+      return text;
     } finally {
       if (timer) window.clearTimeout(timer);
     }
@@ -5228,7 +5217,7 @@
       "display:block;width:100%;height:auto;border-radius:8px;border:1px solid #fce7f3;background:#fff;";
     const sponsorHint = document.createElement("div");
     sponsorHint.textContent =
-      "感谢对本项目的支持。本项目主要通过 Vibe Coding 持续迭代完成（感谢 GPT-5.4 的大力支持），已经消耗近 200M tokens。每一份赞助都会继续用于功能打磨、问题修复和后续维护。";
+      "感谢您对本项目的支持。每一份赞助都会继续用于功能打磨、问题修复和后续维护。";
     sponsorHint.style.cssText =
       "color:#64748b;font-size:11px;line-height:1.35;margin-top:8px;text-align:center;";
     const btnSponsorOpenImage = document.createElement("button");
