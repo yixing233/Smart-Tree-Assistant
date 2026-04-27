@@ -9,12 +9,13 @@
 // @match        https://hike-teaching-center.polymas.com/stu-hike/agent-course-hike/ai-course-center*
 // @match        https://onlineweb.zhihuishu.com/*
 // @match        https://passport.zhihuishu.com/login*
-// @downloadURL  https://file.157342.xyz/api/share-bundles/ACnVM2CoePAYSpWoRfoRgOEa/files/5/download/zhihuishu-knowledge-helper.user.js
-// @updateURL    https://file.157342.xyz/api/share-bundles/ACnVM2CoePAYSpWoRfoRgOEa/files/5/download/zhihuishu-knowledge-helper.user.js
+// @downloadURL  https://raw.githubusercontent.com/yixing233/Smart-Tree-Assistant/main/zhihuishu-knowledge-helper.user.js
+// @updateURL    https://raw.githubusercontent.com/yixing233/Smart-Tree-Assistant/main/zhihuishu-knowledge-helper.user.js
 // @grant        GM_xmlhttpRequest
 // @grant        GM_setClipboard
 // @grant        unsafeWindow
 // @connect      kg-ai-run.zhihuishu.com
+// @connect      raw.githubusercontent.com
 // @run-at       document-start
 // ==/UserScript==
 
@@ -34,6 +35,13 @@
   const VIDEO_CONTROL_AUTO_MUTE_PREFIX = "zs-knowledge-video-auto-mute";
   const VIDEO_SEEK_HINT_PREFIX = "zs-knowledge-video-seek-hint";
   const AUTOMATION_MASK_PREFIX = "zs-knowledge-automation-mask";
+  const SCRIPT_CURRENT_VERSION = "0.5.2";
+  const SCRIPT_UPDATE_URL =
+    "https://raw.githubusercontent.com/yixing233/Smart-Tree-Assistant/main/zhihuishu-knowledge-helper.user.js";
+  const SCRIPT_DOWNLOAD_URL = SCRIPT_UPDATE_URL;
+  const SCRIPT_UPDATE_CHECK_INTERVAL_MS = 12 * 60 * 60 * 1000;
+  const SCRIPT_UPDATE_LAST_CHECK_KEY = "zs-knowledge-helper-update-last-check";
+  const SCRIPT_UPDATE_LAST_FOUND_KEY = "zs-knowledge-helper-update-last-found";
   const CAPTURED_RESPONSES = [];
   const CAPTURED_TRAFFIC = [];
   let HOOK_INSTALLED = false;
@@ -2645,6 +2653,133 @@
     return badge;
   }
 
+  function extractUserscriptMetaValue(text, key) {
+    const source = String(text || "");
+    const name = String(key || "")
+      .trim()
+      .replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
+    if (!name) return "";
+    const match = source.match(
+      new RegExp(`^\\s*//\\s*@${name}\\s+(.+?)\\s*$`, "mi"),
+    );
+    return match ? String(match[1] || "").trim() : "";
+  }
+
+  function compareScriptVersions(a, b) {
+    const toParts = (value) =>
+      String(value || "")
+        .trim()
+        .split(/[.\-_]+/)
+        .map((part) => {
+          const text = String(part || "").trim();
+          return /^\d+$/.test(text) ? Number(text) : text.toLowerCase();
+        });
+    const left = toParts(a);
+    const right = toParts(b);
+    const maxLen = Math.max(left.length, right.length);
+    for (let i = 0; i < maxLen; i += 1) {
+      const l = i < left.length ? left[i] : 0;
+      const r = i < right.length ? right[i] : 0;
+      if (typeof l === "number" && typeof r === "number") {
+        if (l > r) return 1;
+        if (l < r) return -1;
+        continue;
+      }
+      const ls = String(l);
+      const rs = String(r);
+      if (ls > rs) return 1;
+      if (ls < rs) return -1;
+    }
+    return 0;
+  }
+
+  function readScriptUpdateCache(key) {
+    const name = String(key || "").trim();
+    if (!name) return "";
+    try {
+      if (typeof GM_getValue === "function") {
+        const raw = GM_getValue(name, "");
+        if (raw != null && raw !== "") return String(raw);
+      }
+    } catch {}
+    try {
+      return String(localStorage.getItem(name) || "");
+    } catch {
+      return "";
+    }
+  }
+
+  function writeScriptUpdateCache(key, value) {
+    const name = String(key || "").trim();
+    if (!name) return;
+    const text = String(value == null ? "" : value);
+    try {
+      if (typeof GM_setValue === "function") GM_setValue(name, text);
+    } catch {}
+    try {
+      if (text) localStorage.setItem(name, text);
+      else localStorage.removeItem(name);
+    } catch {}
+  }
+
+  async function requestUserscriptText(url, options = {}) {
+    const targetUrl = String(url || "").trim();
+    if (!targetUrl) throw new Error("缺少更新地址");
+    const timeoutMs = Math.max(1000, Number(options.timeoutMs || 12000));
+    const controller =
+      typeof AbortController !== "undefined" ? new AbortController() : null;
+    const timer = controller
+      ? window.setTimeout(() => controller.abort(), timeoutMs)
+      : 0;
+    try {
+      try {
+        const res = await fetch(targetUrl, {
+          method: "GET",
+          mode: "cors",
+          credentials: "omit",
+          cache: "no-store",
+          headers: {
+            Accept:
+              "text/plain, text/javascript, application/javascript;q=0.9, */*;q=0.8",
+            "Cache-Control": "no-cache",
+          },
+          signal: controller ? controller.signal : undefined,
+        });
+        const text = await res.text();
+        if (!res.ok) {
+          throw new Error(`HTTP ${res.status}`);
+        }
+        return text;
+      } catch (fetchErr) {
+        if (typeof GM_xmlhttpRequest !== "function") throw fetchErr;
+        return await new Promise((resolve, reject) => {
+          GM_xmlhttpRequest({
+            method: "GET",
+            url: targetUrl,
+            headers: {
+              Accept:
+                "text/plain, text/javascript, application/javascript;q=0.9, */*;q=0.8",
+              "Cache-Control": "no-cache",
+            },
+            timeout: timeoutMs,
+            onload: (res) => {
+              const status = Number((res && res.status) || 0);
+              if (status >= 200 && status < 300) {
+                resolve(String((res && res.responseText) || ""));
+                return;
+              }
+              reject(new Error(`HTTP ${status || "network"}`));
+            },
+            onerror: () => reject(new Error("网络错误")),
+            ontimeout: () => reject(new Error("请求超时")),
+          });
+        });
+      }
+    } finally {
+      if (timer) window.clearTimeout(timer);
+    }
+  }
+
   function findLatestUnfinishedResource(modules, options = {}) {
     const excludeUid = String(
       (options && options.excludeResourceUid) || "",
@@ -4882,6 +5017,162 @@
     const titleBarActions = document.createElement("div");
     titleBarActions.style.cssText =
       "display:inline-flex;align-items:center;justify-content:flex-end;gap:6px;flex:0 0 auto;";
+    let panelStatusNode = null;
+
+    const btnCheckUpdate = document.createElement("button");
+    btnCheckUpdate.type = "button";
+    btnCheckUpdate.setAttribute("aria-label", "检查脚本更新");
+    btnCheckUpdate.title = "检查脚本更新";
+    btnCheckUpdate.style.cssText = [
+      "width:30px",
+      "height:30px",
+      "padding:0",
+      "border-radius:999px",
+      "border:1px solid #bfdbfe",
+      "background:#eff6ff",
+      "color:#2563eb",
+      "display:inline-flex",
+      "align-items:center",
+      "justify-content:center",
+      "cursor:pointer",
+      "flex:0 0 auto",
+      "transition:border-color .18s ease, box-shadow .18s ease, background .18s ease, color .18s ease, opacity .18s ease",
+    ].join(";");
+    const btnCheckUpdateIcon = createIcon("refresh", {
+      size: 15,
+      strokeWidth: 2.2,
+    });
+    btnCheckUpdate.appendChild(btnCheckUpdateIcon);
+    applyHoverAccent(btnCheckUpdate, {
+      hoverBorderColor: "#60a5fa",
+      hoverShadow: "0 0 0 2px rgba(59,130,246,.14)",
+    });
+    let checkUpdateBusy = false;
+    let checkUpdateHasNewVersion = false;
+    const setPanelUpdateMessage = (text) => {
+      const msg = String(text || "").trim();
+      if (!msg) return;
+      if (panelStatusNode) panelStatusNode.textContent = msg;
+      console.log("[知识抓取]", msg);
+    };
+    function setCheckUpdateButtonState(
+      busy,
+      hasNewVersion = checkUpdateHasNewVersion,
+    ) {
+      checkUpdateBusy = !!busy;
+      checkUpdateHasNewVersion = !!hasNewVersion;
+      btnCheckUpdate.disabled = checkUpdateBusy;
+      btnCheckUpdate.style.opacity = checkUpdateBusy ? "0.72" : "1";
+      btnCheckUpdate.style.cursor = checkUpdateBusy ? "wait" : "pointer";
+      btnCheckUpdate.style.borderColor = checkUpdateHasNewVersion
+        ? "#86efac"
+        : "#bfdbfe";
+      btnCheckUpdate.style.background = checkUpdateHasNewVersion
+        ? "#f0fdf4"
+        : "#eff6ff";
+      btnCheckUpdate.style.color = checkUpdateHasNewVersion
+        ? "#15803d"
+        : "#2563eb";
+      btnCheckUpdate.title = checkUpdateHasNewVersion
+        ? "发现新版本，点击查看更新"
+        : checkUpdateBusy
+          ? "正在检查更新..."
+          : "检查脚本更新";
+      btnCheckUpdate.setAttribute("aria-label", btnCheckUpdate.title);
+      btnCheckUpdateIcon.style.animation = checkUpdateBusy
+        ? "zs-spin 1s linear infinite"
+        : "none";
+    }
+    function syncCheckUpdateButtonFromCache() {
+      const cachedVersion = readScriptUpdateCache(SCRIPT_UPDATE_LAST_FOUND_KEY);
+      setCheckUpdateButtonState(
+        false,
+        !!cachedVersion &&
+          compareScriptVersions(cachedVersion, SCRIPT_CURRENT_VERSION) > 0,
+      );
+    }
+    async function handleCheckScriptUpdate(options = {}) {
+      if (checkUpdateBusy) return;
+      const silent = options && options.silent === true;
+      setCheckUpdateButtonState(true, false);
+      if (!silent) setPanelUpdateMessage("状态: 正在检查脚本更新...");
+      try {
+        const scriptText = await requestUserscriptText(SCRIPT_UPDATE_URL, {
+          timeoutMs: 15000,
+        });
+        writeScriptUpdateCache(SCRIPT_UPDATE_LAST_CHECK_KEY, Date.now());
+        const remoteVersion =
+          extractUserscriptMetaValue(scriptText, "version") || "";
+        const remoteDownloadUrl =
+          extractUserscriptMetaValue(scriptText, "downloadURL") ||
+          extractUserscriptMetaValue(scriptText, "updateURL") ||
+          SCRIPT_DOWNLOAD_URL;
+        if (!remoteVersion) {
+          throw new Error("未解析到远程版本号");
+        }
+        const compare = compareScriptVersions(
+          remoteVersion,
+          SCRIPT_CURRENT_VERSION,
+        );
+        if (compare > 0) {
+          writeScriptUpdateCache(SCRIPT_UPDATE_LAST_FOUND_KEY, remoteVersion);
+          setCheckUpdateButtonState(false, true);
+          if (!silent) {
+            setPanelUpdateMessage(
+              `状态: 发现新版本 ${remoteVersion}（当前 ${SCRIPT_CURRENT_VERSION}）`,
+            );
+            const shouldOpen = window.confirm(
+              `发现新版本 ${remoteVersion}，当前版本 ${SCRIPT_CURRENT_VERSION}。\n是否立即打开更新链接？`,
+            );
+            if (shouldOpen) {
+              window.open(
+                remoteDownloadUrl,
+                "_blank",
+                "noopener,noreferrer",
+              );
+            }
+          } else {
+            setPanelUpdateMessage(
+              `状态: 检测到新版本 ${remoteVersion}，可点击左上角标题右侧更新按钮查看`,
+            );
+          }
+          return;
+        }
+        writeScriptUpdateCache(SCRIPT_UPDATE_LAST_FOUND_KEY, "");
+        setCheckUpdateButtonState(false, false);
+        const latestText =
+          compare === 0
+            ? `状态: 当前已是最新版本 (${SCRIPT_CURRENT_VERSION})`
+            : `状态: 当前版本 ${SCRIPT_CURRENT_VERSION} 高于远程版本 ${remoteVersion}`;
+        if (!silent) setPanelUpdateMessage(latestText);
+        if (!silent && !panelStatusNode) {
+          window.alert(latestText.replace(/^状态:\s*/, ""));
+        }
+      } catch (err) {
+        setCheckUpdateButtonState(false, false);
+        const errorText = `状态: 检查更新失败 - ${String((err && err.message) || err || "未知错误")}`;
+        if (!silent) setPanelUpdateMessage(errorText);
+        else syncCheckUpdateButtonFromCache();
+        if (!silent && !panelStatusNode) {
+          window.alert(errorText.replace(/^状态:\s*/, ""));
+        }
+      }
+    }
+    function scheduleAutoCheckScriptUpdate() {
+      syncCheckUpdateButtonFromCache();
+      const lastCheckAt = Number(
+        readScriptUpdateCache(SCRIPT_UPDATE_LAST_CHECK_KEY) || 0,
+      );
+      if (
+        lastCheckAt &&
+        Date.now() - lastCheckAt < SCRIPT_UPDATE_CHECK_INTERVAL_MS
+      ) {
+        return;
+      }
+      window.setTimeout(() => {
+        handleCheckScriptUpdate({ silent: true }).catch(() => {});
+      }, 1200);
+    }
 
     const btnSponsor = document.createElement("button");
     btnSponsor.type = "button";
@@ -5046,6 +5337,7 @@
       hoverBorderColor: "#818cf8",
       hoverShadow: "0 0 0 2px rgba(99,102,241,.14)",
     });
+    titleBarActions.appendChild(btnCheckUpdate);
     titleBarActions.appendChild(btnSponsor);
     titleBarActions.appendChild(btnStar);
     titleBarActions.appendChild(btnIssues);
@@ -5161,6 +5453,11 @@
         const nextVisible = sponsorPopover.style.display === "none";
         setSponsorPopoverVisible(nextVisible);
       });
+      btnCheckUpdate.addEventListener("click", (e) => {
+        e.preventDefault();
+        e.stopPropagation();
+        handleCheckScriptUpdate().catch(() => {});
+      });
       sponsorPopover.addEventListener("click", (e) => {
         e.stopPropagation();
       });
@@ -5269,6 +5566,7 @@
       titleBar.appendChild(title);
       titleBar.appendChild(titleBarActions);
       panel.appendChild(titleBar);
+      scheduleAutoCheckScriptUpdate();
       panel.appendChild(feedbackHint);
       document.body.appendChild(sponsorPopover);
       document.body.appendChild(sponsorPreviewOverlay);
@@ -5433,6 +5731,7 @@
     status.textContent = "状态: 待执行";
     status.style.cssText =
       "color:#334155;line-height:1.35;min-width:0;font-size:12px;white-space:nowrap;overflow:hidden;text-overflow:ellipsis;flex:1 1 auto;";
+    panelStatusNode = status;
     const statusTopRow = document.createElement("div");
     statusTopRow.style.cssText =
       "display:flex;align-items:flex-start;justify-content:space-between;gap:10px;min-width:0;";
@@ -6702,6 +7001,7 @@
     titleBar.appendChild(title);
     titleBar.appendChild(titleBarActions);
     panel.appendChild(titleBar);
+    scheduleAutoCheckScriptUpdate();
     panel.appendChild(feedbackHint);
     document.body.appendChild(sponsorPopover);
     document.body.appendChild(sponsorPreviewOverlay);
