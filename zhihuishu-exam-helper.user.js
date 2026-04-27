@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         智慧树习题助手
 // @namespace    https://ai-smart-course-student-pro.zhihuishu.com/
-// @version      0.5.6
+// @version      0.5.7
 // @downloadURL  https://raw.githubusercontent.com/yixing233/Smart-Tree-Assistant/main/zhihuishu-exam-helper.user.js
 // @updateURL    https://raw.githubusercontent.com/yixing233/Smart-Tree-Assistant/main/zhihuishu-exam-helper.user.js
 // @description  一个基于智慧树AI课程平台开发的脚本, 能够自动完成所有习题, 如有bug, 请前往GitHub提交issues.
@@ -1032,9 +1032,9 @@
 
   function extractNodeRawText(node) {
     if (!node) return "";
+    if (typeof node.textContent === "string") return node.textContent;
     if (typeof node.innerText === "string" && node.innerText)
       return node.innerText;
-    if (typeof node.textContent === "string") return node.textContent;
     return "";
   }
 
@@ -1895,9 +1895,13 @@
 
   function extractUserscriptMetaValue(text, key) {
     const source = String(text || "");
-    const name = String(key || "").trim().replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
+    const name = String(key || "")
+      .trim()
+      .replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
     if (!name) return "";
-    const match = source.match(new RegExp(`^\\s*//\\s*@${name}\\s+(.+?)\\s*$`, "mi"));
+    const match = source.match(
+      new RegExp(`^\\s*//\\s*@${name}\\s+(.+?)\\s*$`, "mi"),
+    );
     return match ? String(match[1] || "").trim() : "";
   }
 
@@ -6041,15 +6045,24 @@
     });
     let checkUpdateBusy = false;
     let checkUpdateHasNewVersion = false;
-    function setCheckUpdateButtonState(busy, hasNewVersion = checkUpdateHasNewVersion) {
+    function setCheckUpdateButtonState(
+      busy,
+      hasNewVersion = checkUpdateHasNewVersion,
+    ) {
       checkUpdateBusy = !!busy;
       checkUpdateHasNewVersion = !!hasNewVersion;
       btnCheckUpdate.disabled = checkUpdateBusy;
       btnCheckUpdate.style.opacity = checkUpdateBusy ? "0.72" : "1";
       btnCheckUpdate.style.cursor = checkUpdateBusy ? "wait" : "pointer";
-      btnCheckUpdate.style.borderColor = checkUpdateHasNewVersion ? "#86efac" : "#bfdbfe";
-      btnCheckUpdate.style.background = checkUpdateHasNewVersion ? "#f0fdf4" : "#eff6ff";
-      btnCheckUpdate.style.color = checkUpdateHasNewVersion ? "#15803d" : "#2563eb";
+      btnCheckUpdate.style.borderColor = checkUpdateHasNewVersion
+        ? "#86efac"
+        : "#bfdbfe";
+      btnCheckUpdate.style.background = checkUpdateHasNewVersion
+        ? "#f0fdf4"
+        : "#eff6ff";
+      btnCheckUpdate.style.color = checkUpdateHasNewVersion
+        ? "#15803d"
+        : "#2563eb";
       btnCheckUpdate.title = checkUpdateHasNewVersion
         ? "发现新版本，点击查看更新"
         : checkUpdateBusy
@@ -6100,11 +6113,7 @@
               `发现新版本 ${remoteVersion}，当前版本 ${SCRIPT_CURRENT_VERSION}。\n是否立即打开更新链接？`,
             );
             if (shouldOpen) {
-              window.open(
-                remoteDownloadUrl,
-                "_blank",
-                "noopener,noreferrer",
-              );
+              window.open(remoteDownloadUrl, "_blank", "noopener,noreferrer");
             }
           } else {
             status.textContent = `状态: 检测到新版本 ${remoteVersion}，可点击左上角标题右侧更新按钮查看`;
@@ -8007,7 +8016,9 @@
           const el = document.querySelector(".questionContent .questionTitle");
           if (!el) return "";
           const clone = el.cloneNode(true);
-          for (const node of Array.from(clone.querySelectorAll(".letterSortNum"))) {
+          for (const node of Array.from(
+            clone.querySelectorAll(".letterSortNum"),
+          )) {
             node.remove();
           }
           return extractNodeRawText(clone);
@@ -9487,9 +9498,7 @@
       ).trim();
       const traceId = String((userInfo && userInfo.traceId) || "").trim();
       const bodyText = JSON.stringify({
-        stem: String(
-          (payload && (payload.rawStem || payload.stem)) || "",
-        ),
+        stem: String((payload && (payload.rawStem || payload.stem)) || ""),
         type: String((payload && payload.type) || "").trim(),
         options: Array.isArray(payload && payload.options)
           ? payload.options
@@ -9868,10 +9877,7 @@
             const base = candidates[idx];
             idx += 1;
             const url = new URL("/api/questions", `${base}/`);
-            url.searchParams.set(
-              "q",
-              String(queryText || ""),
-            );
+            url.searchParams.set("q", String(queryText || ""));
             url.searchParams.set("token", token);
             url.searchParams.set(
               "username",
@@ -10436,10 +10442,7 @@
         ).trim();
         return { label, content };
       });
-      const key =
-        questionNo > 0
-          ? `q-${questionNo}`
-          : `s-${stem}`;
+      const key = questionNo > 0 ? `q-${questionNo}` : `s-${stem}`;
       examAnsweredMap.set(key, {
         questionNo,
         stem,
