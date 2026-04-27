@@ -1,9 +1,9 @@
 // ==UserScript==
 // @name         智慧树习题助手
 // @namespace    https://ai-smart-course-student-pro.zhihuishu.com/
-// @version      0.5.4
-// @downloadURL  https://file.157342.xyz/api/share-bundles/eezU28mJLSisXVyhP-BVPmOO/files/6/download/zhihuishu-exam-helper.user.js
-// @updateURL    https://file.157342.xyz/api/share-bundles/eezU28mJLSisXVyhP-BVPmOO/files/6/download/zhihuishu-exam-helper.user.js
+// @version      0.5.5
+// @downloadURL  https://raw.githubusercontent.com/yixing233/Smart-Tree-Assistant/main/zhihuishu-exam-helper.user.js
+// @updateURL    https://raw.githubusercontent.com/yixing233/Smart-Tree-Assistant/main/zhihuishu-exam-helper.user.js
 // @description  一个基于智慧树AI课程平台开发的脚本, 能够自动完成所有习题, 如有bug, 请前往GitHub提交issues.
 // @author       xchengb
 // @match        https://studentexamcomh5.zhihuishu.com/studentReviewTestOrExam/*
@@ -1020,6 +1020,14 @@
       .replace(/[\r\n\t\f\v]+/g, " ")
       .replace(/\s+/g, " ")
       .trim();
+  }
+
+  function extractNodeRawText(node) {
+    if (!node) return "";
+    if (typeof node.innerText === "string" && node.innerText)
+      return node.innerText;
+    if (typeof node.textContent === "string") return node.textContent;
+    return "";
   }
 
   function compactObject(obj) {
@@ -7747,32 +7755,34 @@
     }
 
     function getCurrentExamQuestionStem() {
-      const selectors = [
-        ".questionContent .centent-pre .preStyle",
-        ".questionContent .questionTitle .letterSortNum",
-        ".questionContent .questionTitle",
-        ".questionContent .centent-pre",
-        ".questionContent",
+      const candidates = [
+        () => {
+          const el = document.querySelector(
+            ".questionContent .centent-pre .preStyle",
+          );
+          return extractNodeRawText(el);
+        },
+        () => {
+          const el = document.querySelector(".questionContent .questionTitle");
+          if (!el) return "";
+          const clone = el.cloneNode(true);
+          for (const node of Array.from(clone.querySelectorAll(".letterSortNum"))) {
+            node.remove();
+          }
+          return extractNodeRawText(clone);
+        },
+        () => {
+          const el = document.querySelector(".questionContent .centent-pre");
+          return extractNodeRawText(el);
+        },
       ];
-      for (const selector of selectors) {
-        for (const el of Array.from(document.querySelectorAll(selector))) {
-          const raw = stripHtml(el && el.textContent)
-            .replace(/\s+/g, " ")
-            .trim();
-          if (!raw || raw.length < 6) continue;
-          return raw;
-        }
+      for (const pick of candidates) {
+        const raw = String(pick() || "");
+        if (!raw) continue;
+        if (String(raw).trim().length < 6) continue;
+        return raw;
       }
       return "";
-    }
-
-    function normalizeExamStemForApiQuery(raw) {
-      const text = stripHtml(raw);
-      return String(text || "")
-        .replace(/[\u200B-\u200D\uFEFF]/g, "")
-        .replace(/[\u00A0\u1680\u180E\u2000-\u200D\u202F\u205F\u3000]/g, " ")
-        .replace(/\s+/g, " ")
-        .trim();
     }
 
     function normalizeExamStemKeepSpaces(raw) {
@@ -7783,25 +7793,6 @@
         .replace(/[\u00A0\u1680\u180E\u2000-\u200D\u202F\u205F\u3000]/g, " ")
         .replace(/[\r\n\t\f\v]+/g, " ")
         .trim();
-    }
-
-    function toFullWidthPunct(raw) {
-      return String(raw || "")
-        .replace(/\(/g, "（")
-        .replace(/\)/g, "）")
-        .replace(/,/g, "，")
-        .replace(/;/g, "；")
-        .replace(/:/g, "：")
-        .replace(/!/g, "！")
-        .replace(/\?/g, "？");
-    }
-
-    function extractStemPrefixBeforeBlank(raw) {
-      const text = normalizeExamStemForApiQuery(raw);
-      if (!text || !/\s/.test(text)) return "";
-      const firstPart = String(text.split(/\s+/)[0] || "").trim();
-      if (firstPart.length >= 6) return firstPart;
-      return "";
     }
 
     function normalizeExamStemForSearch(raw) {
@@ -9182,7 +9173,7 @@
         const clone = titleNode.cloneNode(true);
         const indexNode = clone.querySelector(".option-index");
         if (indexNode) indexNode.remove();
-        return extractNodeDisplayText(clone);
+        return extractNodeRawText(clone);
       };
       const pickRefAnswer = (card) => {
         const nodes = Array.from(
@@ -9201,13 +9192,14 @@
       const rows = [];
       for (const card of cards) {
         if (!card.querySelector(".question-result.error")) continue;
-        const stem = pickStem(card);
+        const rawStem = pickStem(card);
         const options = toOptions(card);
         const type = normalizeExamQuestionType(
           norm(card.querySelector(".quest-type")?.textContent || "未知题型"),
         );
         const refRaw = pickRefAnswer(card);
         const answer = normalizeFeedbackAnswerByType(refRaw, type, options);
+        const stem = extractNodeDisplayText({ textContent: rawStem });
         if (!stem || !answer) continue;
         if (
           (type === "单选题" || type === "多选题" || type === "判断题") &&
@@ -9219,11 +9211,11 @@
           );
           continue;
         }
-        rows.push({ stem, type, options, answer });
+        rows.push({ stem, rawStem, type, options, answer });
       }
       const dedup = new Map();
       for (const row of rows) {
-        const key = `${normalizeExamStemForSearch(row.stem).slice(0, 240)}|${row.type}`;
+        const key = `${normalizeExamStemForSearch(row.rawStem || row.stem).slice(0, 240)}|${row.type}`;
         if (!key || dedup.has(key)) continue;
         dedup.set(key, row);
       }
@@ -9254,7 +9246,9 @@
       ).trim();
       const traceId = String((userInfo && userInfo.traceId) || "").trim();
       const bodyText = JSON.stringify({
-        stem: String((payload && payload.stem) || "").trim(),
+        stem: String(
+          (payload && (payload.rawStem || payload.stem)) || "",
+        ),
         type: String((payload && payload.type) || "").trim(),
         options: Array.isArray(payload && payload.options)
           ? payload.options
@@ -9592,57 +9586,8 @@
       if (emitStatus) emitStatus("正在校验题库身份...");
       const clientIp = await getExamQaUploadIp();
       const examUserInfo = await ensureExamQaUsernameBound(token, clientIp);
-      const rawStemWithSpaces = normalizeExamStemKeepSpaces(stem);
-      const rawStem = String(rawStemWithSpaces || "")
-        .replace(/\s+/g, " ")
-        .trim();
-      const queryStem =
-        normalizeExamStemForApiQuery(rawStemWithSpaces) ||
-        String(rawStem || "").trim();
-      const collapsedInlineBlankStem = collapseInlineBlankGaps(
-        rawStemWithSpaces || queryStem || rawStem,
-      );
-      const blankSignature = normalizeStemWithBlankSignature(
-        rawStemWithSpaces || queryStem || rawStem,
-      );
-      const fullWidthStem = toFullWidthPunct(queryStem);
-      const compactStem = String(normalizeExamStemForSearch(queryStem) || "")
-        .replace(/[\u200B-\u200D\uFEFF]/g, "")
-        .replace(/\s+/g, "")
-        .trim();
-      const blankPrefixStem = extractStemPrefixBeforeBlank(
-        rawStemWithSpaces || queryStem,
-      );
-      const queryStemNoPunct = String(queryStem || "")
-        .replace(/[，,。；;：:！？!?（）()\[\]【】《》]/g, "")
-        .replace(/\s+/g, " ")
-        .trim();
-      const compactNoPunct = String(compactStem || "")
-        .replace(/[，,。；;：:！？!?（）()\[\]【】《》]/g, "")
-        .trim();
-
-      const candidates = [];
-      const pushCandidate = (v) => {
-        const s = String(v || "").trim();
-        if (!s || s.length < 6) return;
-        if (!candidates.includes(s)) candidates.push(s);
-      };
-      // 优先使用保留空格语义的查询词，提升接口召回
-      pushCandidate(rawStem.slice(0, 200));
-      pushCandidate(fullWidthStem.slice(0, 200));
-      pushCandidate(queryStem.slice(0, 200));
-      pushCandidate(collapsedInlineBlankStem.slice(0, 200));
-      pushCandidate(queryStemNoPunct.slice(0, 200));
-      pushCandidate(queryStem.split(/[，,。；;：:]/)[0]);
-      pushCandidate(queryStemNoPunct.split(/[，,。；;：:]/)[0]);
-      // 题干存在空白占位时，额外用空白前前缀查询（例："中国梦归根结底是     的梦" -> "中国梦归根结底是"）
-      pushCandidate(blankPrefixStem);
-      // 再使用紧凑词兜底
-      pushCandidate(compactStem.slice(0, 120));
-      pushCandidate(compactStem.split(/[，,。；;：:]/)[0]);
-      pushCandidate(compactNoPunct.slice(0, 120));
-      if (compactStem.length > 28) pushCandidate(compactStem.slice(0, 28));
-      if (compactStem.length > 18) pushCandidate(compactStem.slice(0, 18));
+      const queryStem = String(stem == null ? "" : stem);
+      if (!queryStem || queryStem.trim().length < 6) return null;
 
       const requestTextByQuery = (queryText) =>
         new Promise((resolve, reject) => {
@@ -9684,9 +9629,7 @@
             const url = new URL("/api/questions", `${base}/`);
             url.searchParams.set(
               "q",
-              String(queryText || "")
-                .trim()
-                .slice(0, 200),
+              String(queryText || ""),
             );
             url.searchParams.set("token", token);
             url.searchParams.set(
@@ -9771,62 +9714,45 @@
       let lastError = null;
       const normalizedStem = normalizeTextForMatch(stem);
       const normalizedStemBlank = normalizeStemWithBlankSignature(stem);
-      for (
-        let queryIndex = 0;
-        queryIndex < candidates.length;
-        queryIndex += 1
-      ) {
-        const q = candidates[queryIndex];
-        try {
-          if (emitStatus)
-            emitStatus(
-              `正在检索题库 (${queryIndex + 1}/${candidates.length})...`,
-            );
-          const text = await requestTextByQuery(q);
-          const json = safeJsonParse(text);
-          const list = parseList(json);
-          for (const item of list) {
-            if (!item || typeof item !== "object") continue;
-            const itemStemRaw = getQuestionField(item);
-            const itemStemNorm = normalizeTextForMatch(itemStemRaw);
-            const itemStemBlank = normalizeStemWithBlankSignature(itemStemRaw);
-            const mapKey =
-              itemStemBlank || itemStemNorm || `row-${merged.size}`;
-            const prev = merged.get(mapKey);
-            if (!prev) {
-              merged.set(mapKey, item);
-              continue;
-            }
-            const prevHasAnswer = !!getQuestionAnswerField(prev);
-            const currHasAnswer = !!getQuestionAnswerField(item);
-            if (!prevHasAnswer && currHasAnswer) {
-              merged.set(mapKey, item);
-            }
+      try {
+        if (emitStatus) emitStatus("正在检索题库...");
+        const text = await requestTextByQuery(queryStem);
+        const json = safeJsonParse(text);
+        const list = parseList(json);
+        for (const item of list) {
+          if (!item || typeof item !== "object") continue;
+          const itemStemRaw = getQuestionField(item);
+          const itemStemNorm = normalizeTextForMatch(itemStemRaw);
+          const itemStemBlank = normalizeStemWithBlankSignature(itemStemRaw);
+          const mapKey = itemStemBlank || itemStemNorm || `row-${merged.size}`;
+          const prev = merged.get(mapKey);
+          if (!prev) {
+            merged.set(mapKey, item);
+            continue;
           }
-          const hasExact = Array.from(merged.values()).some((item) => {
-            const t = normalizeTextForMatch(getQuestionField(item));
-            const tb = normalizeStemWithBlankSignature(getQuestionField(item));
-            const plainExact = !!(t && normalizedStem && t === normalizedStem);
-            const blankExact = !!(
-              tb &&
-              normalizedStemBlank &&
-              tb === normalizedStemBlank
-            );
-            return !!(
-              (plainExact || blankExact) &&
-              getQuestionAnswerField(item)
-            );
-          });
-          if (hasExact) {
-            if (emitStatus) emitStatus("题库已命中高置信答案");
-            break;
+          const prevHasAnswer = !!getQuestionAnswerField(prev);
+          const currHasAnswer = !!getQuestionAnswerField(item);
+          if (!prevHasAnswer && currHasAnswer) {
+            merged.set(mapKey, item);
           }
-        } catch (e) {
-          lastError = e;
-          const msg = String((e && e.message) || e || "");
-          if (isTokenUnavailableMessage(msg)) throw e;
-          console.warn("[题库查询] 查询失败，将尝试下一个关键词:", msg);
         }
+        const hasExact = Array.from(merged.values()).some((item) => {
+          const t = normalizeTextForMatch(getQuestionField(item));
+          const tb = normalizeStemWithBlankSignature(getQuestionField(item));
+          const plainExact = !!(t && normalizedStem && t === normalizedStem);
+          const blankExact = !!(
+            tb &&
+            normalizedStemBlank &&
+            tb === normalizedStemBlank
+          );
+          return !!((plainExact || blankExact) && getQuestionAnswerField(item));
+        });
+        if (hasExact && emitStatus) emitStatus("题库已命中高置信答案");
+      } catch (e) {
+        lastError = e;
+        const msg = String((e && e.message) || e || "");
+        if (isTokenUnavailableMessage(msg)) throw e;
+        console.warn("[题库查询] 原样查询失败:", msg);
       }
       const list = Array.from(merged.values());
       if (!list.length && lastError) throw lastError;
@@ -10120,9 +10046,9 @@
       try {
         pushRuntimeStatus("正在读取当前题目...");
         const snapshot = buildExamQuestionSnapshot();
-        const stem = String(snapshot.stem || "").trim();
+        const stem = String(snapshot.stem || "");
         const type = normalizeExamQuestionType(snapshot.type);
-        if (!stem) {
+        if (!stem || !String(stem).trim()) {
           console.warn("[题库查询] 未识别到当前题干");
           if (!silent) panelSetExamStatus("题库查询失败：未识别到当前题干");
           return false;
@@ -10133,8 +10059,7 @@
           if (!silent) panelSetExamStatus("题库查询失败：请先设置查询 Token");
           return false;
         }
-        const cacheStem = normalizeExamStemForSearch(stem) || stem;
-        const cacheKey = `${type}|${cacheStem}`;
+        const cacheKey = `${type}|${stem}`;
         const cached = examAnswerCache.get(cacheKey);
         let qa = null;
         const cacheTtl =
@@ -10273,7 +10198,7 @@
       const key =
         questionNo > 0
           ? `q-${questionNo}`
-          : `s-${normalizeExamStemForSearch(stem).slice(0, 120)}`;
+          : `s-${stem}`;
       examAnsweredMap.set(key, {
         questionNo,
         stem,
@@ -10319,8 +10244,8 @@
       if (!getStoredExamQueryToken()) return false;
       if (!isExamQuestionVisible()) return false;
       const snapshot = buildExamQuestionSnapshot();
-      const stem = normalizeExamStemForSearch(snapshot && snapshot.stem);
-      if (!stem) return false;
+      const stem = String((snapshot && snapshot.stem) || "");
+      if (!stem || !String(stem).trim()) return false;
       const type = normalizeExamQuestionType(snapshot && snapshot.type);
       const key = `${type}|${stem}`;
       const now = Date.now();
