@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         智慧树习题助手
 // @namespace    https://ai-smart-course-student-pro.zhihuishu.com/
-// @version      0.5.7
+// @version      0.5.8
 // @downloadURL  https://raw.githubusercontent.com/yixing233/Smart-Tree-Assistant/main/zhihuishu-exam-helper.user.js
 // @updateURL    https://raw.githubusercontent.com/yixing233/Smart-Tree-Assistant/main/zhihuishu-exam-helper.user.js
 // @description  一个基于智慧树AI课程平台开发的脚本, 能够自动完成所有习题, 如有bug, 请前往GitHub提交issues.
@@ -21,6 +21,7 @@
 // @connect      raw.githubusercontent.com
 // @connect      localhost
 // @connect      127.0.0.1
+// @connect      *
 // @run-at       document-start
 // ==/UserScript==
 
@@ -66,7 +67,7 @@
   const EXAM_CACHE_MAX_QUESTION_ENTRIES = 1500;
   const EXAM_QUESTION_ROW_CONCURRENCY = 6;
   const EXAM_QUESTION_DETAIL_CONCURRENCY = 10;
-  const SCRIPT_CURRENT_VERSION = "0.5.6";
+  const SCRIPT_CURRENT_VERSION = "0.5.8";
   const SCRIPT_UPDATE_URL =
     "https://raw.githubusercontent.com/yixing233/Smart-Tree-Assistant/main/zhihuishu-exam-helper.user.js";
   const SCRIPT_DOWNLOAD_URL = SCRIPT_UPDATE_URL;
@@ -114,7 +115,13 @@
   }
   const EXAM_QA_TOKEN_STORAGE_KEY = "zs-exam-query-token";
   const EXAM_QA_IP_STORAGE_KEY = "zs-exam-query-ip";
+  const EXAM_CUSTOM_AI_CONFIG_STORAGE_KEY = "zs-exam-custom-ai-config";
   const EXAM_QA_CACHE_TTL_MS = 10 * 60 * 1000;
+  const EXAM_CUSTOM_AI_CACHE_TTL_MS = 10 * 60 * 1000;
+  const EXAM_CUSTOM_AI_MODELS_CACHE_TTL_MS = 10 * 60 * 1000;
+  const EXAM_CUSTOM_AI_REQUEST_TIMEOUT_MS = 30000;
+  const EXAM_CUSTOM_AI_MODEL_FETCH_TIMEOUT_MS = 15000;
+  const EXAM_CUSTOM_AI_CHAT_MAX_TOKENS = 256;
   const LAST_EXAM_PAGE_URL_KEY = "zs-last-exam-page-url";
   const AI_STUDENT_EXAM_RETURN_FALLBACKS = {
     "2034202256169570304:193961":
@@ -122,6 +129,11 @@
   };
   const CAPTURED_RESPONSES = [];
   const CAPTURED_TRAFFIC = [];
+  let customExamAiModelsCache = {
+    key: "",
+    list: [],
+    ts: 0,
+  };
   let HOOK_INSTALLED = false;
   const PAGE_CRYPTO_KEY_CACHE = new Map();
 
@@ -1813,6 +1825,87 @@
     return out;
   }
 
+  function normalizeBaseUrl(url) {
+    return String(url || "")
+      .trim()
+      .replace(/\/+$/, "");
+  }
+
+  function loadCustomExamAiConfig() {
+    let raw = null;
+    try {
+      raw =
+        typeof GM_getValue === "function"
+          ? GM_getValue(EXAM_CUSTOM_AI_CONFIG_STORAGE_KEY, "")
+          : "";
+    } catch {}
+    if (!raw) {
+      try {
+        raw = localStorage.getItem(EXAM_CUSTOM_AI_CONFIG_STORAGE_KEY) || "";
+      } catch {}
+    }
+    const parsed =
+      raw && typeof raw === "object" ? raw : safeJsonParse(String(raw || ""));
+    const config = parsed && typeof parsed === "object" ? parsed : {};
+    return {
+      enabled: !!config.enabled,
+      baseUrl: normalizeBaseUrl(config.baseUrl),
+      apiKey: String(config.apiKey || "").trim(),
+      model: String(config.model || "").trim(),
+    };
+  }
+
+  function saveCustomExamAiConfig(config) {
+    const clean = {
+      enabled: !!(config && config.enabled),
+      baseUrl: normalizeBaseUrl(config && config.baseUrl),
+      apiKey: String((config && config.apiKey) || "").trim(),
+      model: String((config && config.model) || "").trim(),
+    };
+    const text = JSON.stringify(clean);
+    try {
+      if (typeof GM_setValue === "function") {
+        GM_setValue(EXAM_CUSTOM_AI_CONFIG_STORAGE_KEY, text);
+      }
+    } catch {}
+    try {
+      localStorage.setItem(EXAM_CUSTOM_AI_CONFIG_STORAGE_KEY, text);
+    } catch {}
+    return clean;
+  }
+
+  function isCustomExamAiEnabled(config = null) {
+    const finalConfig = config || loadCustomExamAiConfig();
+    return !!(
+      finalConfig &&
+      finalConfig.enabled &&
+      finalConfig.baseUrl &&
+      finalConfig.apiKey &&
+      finalConfig.model
+    );
+  }
+
+  function buildCustomExamAiConfigKey(config) {
+    const finalConfig = config || loadCustomExamAiConfig();
+    return [
+      normalizeBaseUrl(finalConfig.baseUrl),
+      String(finalConfig.apiKey || "").trim(),
+      String(finalConfig.model || "").trim(),
+      finalConfig.enabled ? "1" : "0",
+    ].join("|");
+  }
+
+  function maskSecretText(text, head = 6, tail = 4) {
+    const value = String(text || "").trim();
+    if (!value) return "";
+    if (value.length <= head + tail) return "*".repeat(Math.max(4, value.length));
+    return `${value.slice(0, head)}${"*".repeat(Math.max(4, value.length - head - tail))}${value.slice(-tail)}`;
+  }
+
+  function buildCustomExamAiUrl(baseUrl, path) {
+    return new URL(String(path || "").replace(/^\/*/, "/"), `${normalizeBaseUrl(baseUrl)}/`).toString();
+  }
+
   async function requestExamQaByFetch(method, url, options = {}) {
     const timeoutMs = Math.max(1000, Number(options.timeoutMs || 12000));
     const controller =
@@ -1886,6 +1979,250 @@
     }
     if (fetchErr) throw fetchErr;
     throw new Error("当前环境不支持网络请求");
+  }
+
+  async function requestCustomExamAi(method, url, options = {}) {
+    const finalOptions = {
+      timeoutMs: Math.max(
+        1000,
+        Number(options.timeoutMs || EXAM_CUSTOM_AI_REQUEST_TIMEOUT_MS),
+      ),
+      ...options,
+    };
+    if (typeof GM_xmlhttpRequest === "function") {
+      try {
+        return await requestExamQaByGm(method, url, finalOptions);
+      } catch (gmErr) {
+        try {
+          return await requestExamQaByFetch(method, url, finalOptions);
+        } catch (fetchErr) {
+          const msg =
+            String((gmErr && gmErr.message) || gmErr || "") ||
+            String((fetchErr && fetchErr.message) || fetchErr || "") ||
+            "网络错误";
+          throw new Error(msg);
+        }
+      }
+    }
+    return requestExamQaByFetch(method, url, finalOptions);
+  }
+
+  function normalizeCustomExamAiModelList(json) {
+    const rawList = Array.isArray(json && json.data)
+      ? json.data
+      : Array.isArray(json)
+        ? json
+        : [];
+    const list = [];
+    for (const item of rawList) {
+      const id = String(
+        (item && (item.id || item.name || item.model)) || "",
+      ).trim();
+      if (!id) continue;
+      if (!list.includes(id)) list.push(id);
+    }
+    return list;
+  }
+
+  async function fetchCustomExamAiModels(config = null, options = {}) {
+    const finalConfig = config || loadCustomExamAiConfig();
+    const baseUrl = normalizeBaseUrl(finalConfig.baseUrl);
+    const apiKey = String(finalConfig.apiKey || "").trim();
+    if (!baseUrl) throw new Error("请先填写 AI Base URL");
+    if (!apiKey) throw new Error("请先填写 AI API Key");
+    const cacheKey = buildCustomExamAiConfigKey({
+      ...finalConfig,
+      model: "",
+    });
+    const force = !!options.force;
+    if (
+      !force &&
+      customExamAiModelsCache.key === cacheKey &&
+      Date.now() - Number(customExamAiModelsCache.ts || 0) <
+        EXAM_CUSTOM_AI_MODELS_CACHE_TTL_MS &&
+      Array.isArray(customExamAiModelsCache.list) &&
+      customExamAiModelsCache.list.length
+    ) {
+      return customExamAiModelsCache.list.slice();
+    }
+    const url = buildCustomExamAiUrl(baseUrl, "/v1/models");
+    const res = await requestCustomExamAi("GET", url, {
+      headers: {
+        Accept: "application/json",
+        Authorization: `Bearer ${apiKey}`,
+      },
+      timeoutMs: Number(
+        options.timeoutMs || EXAM_CUSTOM_AI_MODEL_FETCH_TIMEOUT_MS,
+      ),
+      errorLabel: "模型列表获取",
+    });
+    if (!res || Number(res.status || 0) < 200 || Number(res.status || 0) >= 300) {
+      const msg =
+        (res &&
+          res.json &&
+          (res.json.error &&
+            (res.json.error.message || res.json.error.code || res.json.error)) ||
+          res.json.message ||
+          res.json.msg) ||
+        `模型列表获取失败(${Number((res && res.status) || 0) || "network"})`;
+      throw new Error(String(msg));
+    }
+    const list = normalizeCustomExamAiModelList(res.json);
+    customExamAiModelsCache = {
+      key: cacheKey,
+      list: list.slice(),
+      ts: Date.now(),
+    };
+    return list;
+  }
+
+  async function testCustomExamAiConnection(config = null) {
+    const finalConfig = config || loadCustomExamAiConfig();
+    const list = await fetchCustomExamAiModels(finalConfig, { force: true });
+    return {
+      ok: true,
+      models: list,
+      message: list.length
+        ? `连通成功，共获取 ${list.length} 个模型`
+        : "连通成功，但未返回模型列表",
+    };
+  }
+
+  function buildCustomExamAiPrompt(snapshot, type) {
+    const stem = normalizeExamStemKeepSpaces((snapshot && snapshot.stem) || "");
+    const options = Array.isArray(snapshot && snapshot.options)
+      ? snapshot.options
+      : [];
+    const optionLines = options
+      .map((item, idx) => {
+        const labelRaw = String((item && item.label) || "")
+          .trim()
+          .toUpperCase();
+        const label = /^[A-H]$/.test(labelRaw)
+          ? labelRaw
+          : String.fromCharCode(65 + idx);
+        const text = stripHtml(
+          String((item && (item.text || item.content)) || ""),
+        )
+          .replace(/^\s*[A-H][\.\、\s\)]*/i, "")
+          .trim();
+        return text ? `${label}. ${text}` : "";
+      })
+      .filter(Boolean);
+    const normalizedType =
+      normalizeExamQuestionType(type) ||
+      normalizeExamQuestionType(snapshot && snapshot.type) ||
+      "未知题型";
+    return [
+      "你是考试答题助手。",
+      "请根据题目和选项判断最可能正确答案。",
+      "只返回 JSON，不要输出额外说明。",
+      'JSON 格式: {"answer":"A"} 或 {"answer":"A,C"} 或 {"answer":"答案文本"}',
+      `题型: ${normalizedType}`,
+      `题干: ${stem}`,
+      optionLines.length ? `选项:\n${optionLines.join("\n")}` : "该题无显式选项。",
+    ].join("\n");
+  }
+
+  function parseCustomExamAiAnswerFromContent(text) {
+    const raw = String(text || "").trim();
+    if (!raw) return "";
+    const fenced = raw.match(/```(?:json)?\s*([\s\S]*?)```/i);
+    const body = fenced ? String(fenced[1] || "").trim() : raw;
+    const json = safeJsonParse(body);
+    if (json && typeof json === "object") {
+      const answer = String(
+        json.answer ||
+          json.result ||
+          json.output ||
+          json.content ||
+          "",
+      ).trim();
+      if (answer) return answer;
+    }
+    return body;
+  }
+
+  async function fetchQuestionAnswerByCustomAi(snapshot, type, options = {}) {
+    const finalConfig = options.config || loadCustomExamAiConfig();
+    if (!isCustomExamAiEnabled(finalConfig)) {
+      throw new Error("自定义 AI 未完整配置");
+    }
+    const emitStatus =
+      typeof options.onStatus === "function"
+        ? (msg) => {
+            try {
+              options.onStatus(msg);
+            } catch {}
+          }
+        : null;
+    if (emitStatus) emitStatus("题库未命中，正在请求自定义AI...");
+    const url = buildCustomExamAiUrl(finalConfig.baseUrl, "/v1/chat/completions");
+    const payload = {
+      model: String(finalConfig.model || "").trim(),
+      temperature: 0.2,
+      max_tokens: Number(options.maxTokens || EXAM_CUSTOM_AI_CHAT_MAX_TOKENS),
+      messages: [
+        {
+          role: "system",
+          content:
+            "你必须只返回 JSON。answer 字段给出最终答案，单选返回 A，多选返回 A,C，填空或简答返回答案文本。",
+        },
+        {
+          role: "user",
+          content: buildCustomExamAiPrompt(snapshot, type),
+        },
+      ],
+    };
+    const res = await requestCustomExamAi("POST", url, {
+      headers: {
+        Accept: "application/json",
+        "Content-Type": "application/json",
+        Authorization: `Bearer ${String(finalConfig.apiKey || "").trim()}`,
+      },
+      body: JSON.stringify(payload),
+      timeoutMs: Number(
+        options.timeoutMs || EXAM_CUSTOM_AI_REQUEST_TIMEOUT_MS,
+      ),
+      errorLabel: "自定义AI作答",
+    });
+    const status = Number((res && res.status) || 0);
+    if (status < 200 || status >= 300) {
+      const msg =
+        (res &&
+          res.json &&
+          ((res.json.error &&
+            (res.json.error.message || res.json.error.code || res.json.error)) ||
+            res.json.message ||
+            res.json.msg)) ||
+        `自定义AI作答失败(${status || "network"})`;
+      throw new Error(String(msg));
+    }
+    const choice =
+      res &&
+      res.json &&
+      Array.isArray(res.json.choices) &&
+      res.json.choices[0];
+    const content = String(
+      (choice &&
+        choice.message &&
+        (choice.message.content ||
+          (Array.isArray(choice.message.content)
+            ? choice.message.content
+                .map((it) => String((it && it.text) || ""))
+                .join("\n")
+            : ""))) ||
+        "",
+    ).trim();
+    const answer = parseCustomExamAiAnswerFromContent(content);
+    if (!answer) {
+      throw new Error("自定义AI未返回可用答案");
+    }
+    if (emitStatus) emitStatus("自定义AI已返回可用答案");
+    return {
+      item: null,
+      answer,
+    };
   }
 
   function isExamQaRetryableStatus(status) {
@@ -6767,7 +7104,7 @@
     examToolbar.appendChild(btnExamClearCache);
     const examAnswerToolbar = document.createElement("div");
     examAnswerToolbar.style.cssText =
-      "display:grid;grid-template-columns:repeat(2,minmax(0,1fr));gap:8px;flex:0 0 auto;margin-top:2px;";
+      "display:grid;grid-template-columns:repeat(3,minmax(0,1fr));gap:8px;flex:0 0 auto;margin-top:2px;";
     const btnExamSetToken = document.createElement("button");
     setButtonIconLabel(btnExamSetToken, "key", "设置Token");
     styleAutoControlButton(btnExamSetToken);
@@ -6792,9 +7129,23 @@
       hoverShadow: "0 0 0 2px rgba(52,211,153,.2)",
       lift: true,
     });
+    const btnExamAiConfig = document.createElement("button");
+    setButtonIconLabel(btnExamAiConfig, "star", "AI设置");
+    styleAutoControlButton(btnExamAiConfig);
+    btnExamAiConfig.style.width = "100%";
+    btnExamAiConfig.style.background = "#7c3aed";
+    btnExamAiConfig.style.borderColor = "#8b5cf6";
+    btnExamAiConfig.style.color = "#f5f3ff";
+    applyHoverAccent(btnExamAiConfig, {
+      hoverBorderColor: "#a78bfa",
+      hoverShadow: "0 0 0 2px rgba(139,92,246,.18)",
+      lift: true,
+    });
     examAnswerToolbar.appendChild(btnExamSetToken);
     examAnswerToolbar.appendChild(btnExamQueryAnswer);
+    examAnswerToolbar.appendChild(btnExamAiConfig);
     const initialToken = getStoredExamQueryToken();
+    let customExamAiConfigState = loadCustomExamAiConfig();
     function updateExamTokenButtonVisual(token) {
       const hasToken = !!String(token || "").trim();
       if (hasToken) {
@@ -6807,6 +7158,26 @@
         btnExamSetToken.style.background = "#475569";
         btnExamSetToken.style.borderColor = "#64748b";
         btnExamSetToken.style.color = "#f8fafc";
+      }
+    }
+    function updateExamAiConfigButtonVisual(config = null) {
+      const finalConfig = config || loadCustomExamAiConfig();
+      customExamAiConfigState = finalConfig;
+      if (isCustomExamAiEnabled(finalConfig)) {
+        setButtonIconLabel(btnExamAiConfig, "check", "AI已启用");
+        btnExamAiConfig.style.background = "#6d28d9";
+        btnExamAiConfig.style.borderColor = "#8b5cf6";
+        btnExamAiConfig.style.color = "#faf5ff";
+      } else if (finalConfig && finalConfig.enabled) {
+        setButtonIconLabel(btnExamAiConfig, "flag", "AI待完善");
+        btnExamAiConfig.style.background = "#b45309";
+        btnExamAiConfig.style.borderColor = "#f59e0b";
+        btnExamAiConfig.style.color = "#fffbeb";
+      } else {
+        setButtonIconLabel(btnExamAiConfig, "star", "AI设置");
+        btnExamAiConfig.style.background = "#7c3aed";
+        btnExamAiConfig.style.borderColor = "#8b5cf6";
+        btnExamAiConfig.style.color = "#f5f3ff";
       }
     }
     function setExamQueryButtonBusy(isBusy) {
@@ -6826,6 +7197,7 @@
       btnExamQueryAnswer.style.opacity = busy ? ".9" : "1";
     }
     updateExamTokenButtonVisual(initialToken);
+    updateExamAiConfigButtonVisual(customExamAiConfigState);
     const examActionsWrap = document.createElement("div");
     examActionsWrap.style.cssText =
       "border:1px solid #dbe6f3;border-radius:11px;padding:8px;background:#f8fafc;display:flex;flex-direction:column;gap:6px;overflow:visible;position:relative;z-index:2;margin-bottom:6px;";
@@ -6887,6 +7259,139 @@
     examTokenModalCard.appendChild(examTokenModalActionRow);
     examTokenModal.appendChild(examTokenModalCard);
     document.body.appendChild(examTokenModal);
+    const examAiConfigModal = document.createElement("div");
+    examAiConfigModal.style.cssText =
+      "position:fixed;inset:0;background:rgba(15,23,42,.52);display:none;align-items:center;justify-content:center;z-index:2147483646;padding:20px;";
+    const examAiConfigCard = document.createElement("div");
+    examAiConfigCard.style.cssText =
+      "width:min(640px,calc(100vw - 40px));max-height:min(88vh,860px);background:#ffffff;border:1px solid #dbe6f3;border-radius:14px;padding:16px;display:flex;flex-direction:column;gap:12px;box-shadow:0 18px 54px rgba(2,6,23,.32);overflow:hidden;";
+    const examAiConfigTitle = document.createElement("div");
+    examAiConfigTitle.textContent = "自定义 AI 设置";
+    examAiConfigTitle.style.cssText =
+      "color:#0f172a;font-size:15px;font-weight:800;line-height:1.3;";
+    const examAiConfigHint = document.createElement("div");
+    examAiConfigHint.textContent =
+      "开启后，题库未命中时改走自定义 OpenAI 兼容接口。支持 /v1/models 拉取模型候选。";
+    examAiConfigHint.style.cssText =
+      "color:#64748b;font-size:12px;line-height:1.5;";
+    const examAiConfigBody = document.createElement("div");
+    examAiConfigBody.style.cssText =
+      "display:flex;flex-direction:column;gap:10px;overflow:auto;padding-right:2px;";
+    const examAiEnableRow = document.createElement("button");
+    examAiEnableRow.type = "button";
+    examAiEnableRow.style.cssText =
+      "display:flex;align-items:center;justify-content:space-between;gap:12px;border:1px solid #dbe6f3;border-radius:12px;padding:10px 12px;background:#f8fafc;color:#0f172a;cursor:pointer;";
+    const examAiEnableInfo = document.createElement("div");
+    examAiEnableInfo.style.cssText = "display:flex;flex-direction:column;gap:4px;text-align:left;";
+    const examAiEnableTitle = document.createElement("div");
+    examAiEnableTitle.textContent = "启用自定义 AI";
+    examAiEnableTitle.style.cssText = "font-size:13px;font-weight:700;line-height:1.3;";
+    const examAiEnableDesc = document.createElement("div");
+    examAiEnableDesc.textContent = "关闭时保持现有题库 AI fallback 逻辑。";
+    examAiEnableDesc.style.cssText = "font-size:12px;color:#64748b;line-height:1.45;";
+    examAiEnableInfo.appendChild(examAiEnableTitle);
+    examAiEnableInfo.appendChild(examAiEnableDesc);
+    const examAiEnablePill = document.createElement("div");
+    examAiEnablePill.style.cssText =
+      "min-width:64px;height:28px;border-radius:999px;border:1px solid #cbd5e1;background:#e2e8f0;color:#475569;font-size:12px;font-weight:700;display:inline-flex;align-items:center;justify-content:center;padding:0 10px;";
+    examAiEnableRow.appendChild(examAiEnableInfo);
+    examAiEnableRow.appendChild(examAiEnablePill);
+    const examAiFieldWrap = document.createElement("div");
+    examAiFieldWrap.style.cssText = "display:flex;flex-direction:column;gap:10px;";
+    function createAiField(labelText, placeholder, type = "text") {
+      const wrap = document.createElement("label");
+      wrap.style.cssText = "display:flex;flex-direction:column;gap:6px;";
+      const label = document.createElement("div");
+      label.textContent = labelText;
+      label.style.cssText =
+        "color:#334155;font-size:12px;font-weight:700;line-height:1.35;";
+      const input = document.createElement("input");
+      input.type = type;
+      input.placeholder = placeholder;
+      input.autocomplete = "off";
+      input.spellcheck = false;
+      input.style.cssText =
+        "box-sizing:border-box;width:100%;max-width:100%;min-width:0;height:38px;border:1px solid #cbd5e1;border-radius:9px;padding:0 11px;background:#fff;color:#0f172a;font-size:12px;outline:none;";
+      input.addEventListener("focus", () => {
+        input.style.borderColor = "#60a5fa";
+        input.style.boxShadow = "0 0 0 2px rgba(96,165,250,.16)";
+      });
+      input.addEventListener("blur", () => {
+        input.style.borderColor = "#cbd5e1";
+        input.style.boxShadow = "none";
+      });
+      wrap.appendChild(label);
+      wrap.appendChild(input);
+      return { wrap, label, input };
+    }
+    const aiBaseField = createAiField(
+      "AI Base URL",
+      "https://api.openai.com",
+    );
+    const aiKeyField = createAiField("API Key", "sk-...", "password");
+    const aiModelField = createAiField("模型 ID", "gpt-4.1-mini");
+    aiModelField.wrap.style.position = "relative";
+    const aiModelDropdown = document.createElement("div");
+    aiModelDropdown.style.cssText =
+      "position:fixed;left:0;top:0;width:280px;border:1px solid #dbe6f3;border-radius:10px;background:#ffffff;box-shadow:0 16px 40px rgba(15,23,42,.18);display:none;flex-direction:column;max-height:220px;overflow:auto;z-index:2147483647;";
+    const aiModelDropdownEmpty = document.createElement("div");
+    aiModelDropdownEmpty.style.cssText =
+      "padding:10px 12px;color:#64748b;font-size:12px;line-height:1.45;";
+    aiModelDropdown.appendChild(aiModelDropdownEmpty);
+    document.body.appendChild(aiModelDropdown);
+    const examAiActionRow = document.createElement("div");
+    examAiActionRow.style.cssText =
+      "display:grid;grid-template-columns:repeat(2,minmax(0,1fr));gap:8px;";
+    const btnExamAiTest = document.createElement("button");
+    setButtonIconLabel(btnExamAiTest, "refresh", "测试连通性");
+    styleAutoControlButton(btnExamAiTest);
+    btnExamAiTest.style.background = "#0f766e";
+    btnExamAiTest.style.borderColor = "#14b8a6";
+    btnExamAiTest.style.color = "#f0fdfa";
+    const btnExamAiLoadModels = document.createElement("button");
+    setButtonIconLabel(btnExamAiLoadModels, "search", "获取模型列表");
+    styleAutoControlButton(btnExamAiLoadModels);
+    btnExamAiLoadModels.style.background = "#1d4ed8";
+    btnExamAiLoadModels.style.borderColor = "#3b82f6";
+    btnExamAiLoadModels.style.color = "#eff6ff";
+    examAiActionRow.appendChild(btnExamAiTest);
+    examAiActionRow.appendChild(btnExamAiLoadModels);
+    const examAiStatus = document.createElement("div");
+    examAiStatus.style.cssText =
+      "border:1px solid #dbe6f3;border-radius:10px;padding:9px 11px;background:#f8fafc;color:#475569;font-size:12px;line-height:1.5;";
+    examAiStatus.textContent = "状态: 未测试";
+    const examAiFooter = document.createElement("div");
+    examAiFooter.style.cssText =
+      "display:flex;justify-content:flex-end;gap:8px;flex:0 0 auto;";
+    const btnExamAiCancel = document.createElement("button");
+    setButtonIconLabel(btnExamAiCancel, "close", "关闭");
+    styleAutoControlButton(btnExamAiCancel);
+    btnExamAiCancel.style.minWidth = "88px";
+    btnExamAiCancel.style.background = "#475569";
+    btnExamAiCancel.style.borderColor = "#64748b";
+    btnExamAiCancel.style.color = "#f8fafc";
+    const btnExamAiSave = document.createElement("button");
+    setButtonIconLabel(btnExamAiSave, "check", "保存设置");
+    styleAutoControlButton(btnExamAiSave);
+    btnExamAiSave.style.minWidth = "96px";
+    btnExamAiSave.style.background = "#2563eb";
+    btnExamAiSave.style.borderColor = "#3b82f6";
+    btnExamAiSave.style.color = "#f8fafc";
+    examAiFooter.appendChild(btnExamAiCancel);
+    examAiFooter.appendChild(btnExamAiSave);
+    examAiFieldWrap.appendChild(aiBaseField.wrap);
+    examAiFieldWrap.appendChild(aiKeyField.wrap);
+    examAiFieldWrap.appendChild(aiModelField.wrap);
+    examAiConfigBody.appendChild(examAiEnableRow);
+    examAiConfigBody.appendChild(examAiFieldWrap);
+    examAiConfigBody.appendChild(examAiActionRow);
+    examAiConfigBody.appendChild(examAiStatus);
+    examAiConfigCard.appendChild(examAiConfigTitle);
+    examAiConfigCard.appendChild(examAiConfigHint);
+    examAiConfigCard.appendChild(examAiConfigBody);
+    examAiConfigCard.appendChild(examAiFooter);
+    examAiConfigModal.appendChild(examAiConfigCard);
+    document.body.appendChild(examAiConfigModal);
 
     let lastResult = null;
     let currentResourceTimer = 0;
@@ -10327,19 +10832,41 @@
           });
         }
         if (!qa || !qa.answer) {
-          console.warn("[题库查询] 未命中答案，准备 AI 作答");
-          pushRuntimeStatus("题库未命中，正在提交到AI作答...");
+          const customAiConfig = loadCustomExamAiConfig();
+          const useCustomAi = isCustomExamAiEnabled(customAiConfig);
+          console.warn(
+            "[题库查询] 未命中答案，准备",
+            useCustomAi ? "自定义 AI 作答" : "题库 AI 作答",
+          );
+          pushRuntimeStatus(
+            useCustomAi
+              ? "题库未命中，正在请求自定义AI..."
+              : "题库未命中，正在提交到AI作答...",
+          );
           if (!silent)
             panelSetExamStatus("题库未命中：正在提交到题库并等待AI作答...");
-          const aiQa = await fetchQuestionAnswerByAiFallback(snapshot, type, {
-            maxAttempts: EXAM_QA_AI_MAX_RETRIES,
-            waitMs: EXAM_QA_AI_WAIT_MS,
-            onStatus: pushRuntimeStatus,
-          });
+          const aiQa = useCustomAi
+            ? await fetchQuestionAnswerByCustomAi(snapshot, type, {
+                config: customAiConfig,
+                onStatus: pushRuntimeStatus,
+              })
+            : await fetchQuestionAnswerByAiFallback(snapshot, type, {
+                maxAttempts: EXAM_QA_AI_MAX_RETRIES,
+                waitMs: EXAM_QA_AI_WAIT_MS,
+                onStatus: pushRuntimeStatus,
+              });
           if (!aiQa || !aiQa.answer) {
-            pushRuntimeStatus("AI作答暂未返回可用答案");
+            pushRuntimeStatus(
+              useCustomAi
+                ? "自定义AI暂未返回可用答案"
+                : "AI作答暂未返回可用答案",
+            );
             if (!silent)
-              panelSetExamStatus("题库未命中：AI作答仍未返回可用答案");
+              panelSetExamStatus(
+                useCustomAi
+                  ? "题库未命中：自定义AI仍未返回可用答案"
+                  : "题库未命中：AI作答仍未返回可用答案",
+              );
             return false;
           }
           qa = aiQa;
@@ -14351,12 +14878,304 @@
       panelSetExamStatus(token ? "题库 Token 已更新" : "题库 Token 已清除");
       closeExamTokenModal();
     }
+    let examAiConfigDraft = loadCustomExamAiConfig();
+    let examAiModalBusy = false;
+    let examAiModelAllItems = [];
+    let examAiModelVisibleItems = [];
+    function setExamAiStatus(text, type = "info") {
+      examAiStatus.textContent = `状态: ${String(text || "").trim() || "-"}`;
+      if (type === "success") {
+        examAiStatus.style.borderColor = "#86efac";
+        examAiStatus.style.background = "#f0fdf4";
+        examAiStatus.style.color = "#166534";
+      } else if (type === "error") {
+        examAiStatus.style.borderColor = "#fca5a5";
+        examAiStatus.style.background = "#fef2f2";
+        examAiStatus.style.color = "#b91c1c";
+      } else if (type === "warning") {
+        examAiStatus.style.borderColor = "#fcd34d";
+        examAiStatus.style.background = "#fffbeb";
+        examAiStatus.style.color = "#92400e";
+      } else {
+        examAiStatus.style.borderColor = "#dbe6f3";
+        examAiStatus.style.background = "#f8fafc";
+        examAiStatus.style.color = "#475569";
+      }
+    }
+    function setExamAiModalBusy(isBusy, source = "") {
+      examAiModalBusy = !!isBusy;
+      btnExamAiTest.disabled = examAiModalBusy;
+      btnExamAiLoadModels.disabled = examAiModalBusy;
+      btnExamAiSave.disabled = examAiModalBusy;
+      const busyText =
+        source === "models"
+          ? "获取中..."
+          : source === "test"
+            ? "测试中..."
+            : "处理中...";
+      if (examAiModalBusy) {
+        setButtonIconLabel(
+          source === "models" ? btnExamAiLoadModels : btnExamAiTest,
+          "refresh",
+          busyText,
+        );
+      } else {
+        setButtonIconLabel(btnExamAiTest, "refresh", "测试连通性");
+        setButtonIconLabel(btnExamAiLoadModels, "search", "获取模型列表");
+      }
+    }
+    function readExamAiDraftFromInputs() {
+      examAiConfigDraft = {
+        enabled: !!examAiConfigDraft.enabled,
+        baseUrl: normalizeBaseUrl(aiBaseField.input.value),
+        apiKey: String(aiKeyField.input.value || "").trim(),
+        model: String(aiModelField.input.value || "").trim(),
+      };
+      return examAiConfigDraft;
+    }
+    function applyExamAiDraftToInputs(config, options = {}) {
+      const syncStatus = options.syncStatus !== false;
+      const finalConfig = config || loadCustomExamAiConfig();
+      examAiConfigDraft = {
+        enabled: !!finalConfig.enabled,
+        baseUrl: normalizeBaseUrl(finalConfig.baseUrl),
+        apiKey: String(finalConfig.apiKey || "").trim(),
+        model: String(finalConfig.model || "").trim(),
+      };
+      aiBaseField.input.value = examAiConfigDraft.baseUrl;
+      aiKeyField.input.value = examAiConfigDraft.apiKey;
+      aiModelField.input.value = examAiConfigDraft.model;
+      examAiEnablePill.textContent = examAiConfigDraft.enabled ? "已开启" : "已关闭";
+      examAiEnablePill.style.background = examAiConfigDraft.enabled
+        ? "#dcfce7"
+        : "#e2e8f0";
+      examAiEnablePill.style.borderColor = examAiConfigDraft.enabled
+        ? "#86efac"
+        : "#cbd5e1";
+      examAiEnablePill.style.color = examAiConfigDraft.enabled
+        ? "#166534"
+        : "#475569";
+      const fieldsDisabled = !examAiConfigDraft.enabled;
+      [aiBaseField.input, aiKeyField.input, aiModelField.input].forEach((input) => {
+        input.disabled = fieldsDisabled;
+        input.style.opacity = fieldsDisabled ? ".7" : "1";
+        input.style.background = fieldsDisabled ? "#f8fafc" : "#fff";
+      });
+      btnExamAiTest.disabled = fieldsDisabled || examAiModalBusy;
+      btnExamAiLoadModels.disabled = fieldsDisabled || examAiModalBusy;
+      if (!syncStatus) return;
+      if (!examAiConfigDraft.enabled) {
+        hideExamAiModelDropdown();
+        setExamAiStatus("已关闭自定义 AI，将继续使用内置题库 AI", "info");
+      } else if (examAiConfigDraft.baseUrl && examAiConfigDraft.apiKey) {
+        setExamAiStatus(
+          examAiConfigDraft.model
+            ? `当前配置: ${examAiConfigDraft.baseUrl} / ${examAiConfigDraft.model} / ${maskSecretText(examAiConfigDraft.apiKey)}`
+            : `当前配置: ${examAiConfigDraft.baseUrl} / ${maskSecretText(examAiConfigDraft.apiKey)}，可先获取模型列表`,
+          examAiConfigDraft.model ? "info" : "warning",
+        );
+      } else {
+        setExamAiStatus("请先填写 Base URL 和 API Key", "warning");
+      }
+    }
+    function hideExamAiModelDropdown() {
+      aiModelDropdown.style.display = "none";
+    }
+    function syncExamAiModelDropdownPosition() {
+      if (!aiModelDropdown || aiModelDropdown.style.display === "none") return;
+      const rect = aiModelField.input.getBoundingClientRect();
+      const gap = 6;
+      const viewportWidth = Math.max(320, window.innerWidth || 0);
+      const viewportHeight = Math.max(240, window.innerHeight || 0);
+      const desiredWidth = Math.max(240, Math.round(rect.width || 280));
+      const maxWidth = Math.max(240, viewportWidth - 16);
+      const width = Math.min(desiredWidth, maxWidth);
+      let left = Math.round(rect.left);
+      const maxLeft = Math.max(8, viewportWidth - width - 8);
+      left = Math.min(Math.max(8, left), maxLeft);
+      const belowSpace = Math.max(120, Math.round(viewportHeight - rect.bottom - 10));
+      const aboveSpace = Math.max(120, Math.round(rect.top - 10));
+      const openUpward = belowSpace < 180 && aboveSpace > belowSpace;
+      const maxHeight = Math.max(
+        120,
+        Math.min(260, openUpward ? aboveSpace - gap : belowSpace - gap),
+      );
+      let top = openUpward
+        ? Math.round(rect.top - gap - Math.min(maxHeight, aiModelDropdown.offsetHeight || maxHeight))
+        : Math.round(rect.bottom + gap);
+      if (openUpward) top = Math.max(8, top);
+      else top = Math.min(Math.max(8, top), Math.max(8, viewportHeight - maxHeight - 8));
+      aiModelDropdown.style.width = `${width}px`;
+      aiModelDropdown.style.maxHeight = `${maxHeight}px`;
+      aiModelDropdown.style.left = `${left}px`;
+      aiModelDropdown.style.top = `${top}px`;
+    }
+    function renderExamAiModelDropdown(items) {
+      examAiModelVisibleItems = Array.isArray(items) ? items.slice() : [];
+      aiModelDropdown.innerHTML = "";
+      if (!examAiModelVisibleItems.length) {
+        aiModelDropdownEmpty.textContent = "暂无模型候选，可先点击“获取模型列表”。";
+        aiModelDropdown.appendChild(aiModelDropdownEmpty);
+        aiModelDropdown.style.display = "flex";
+        syncExamAiModelDropdownPosition();
+        return;
+      }
+      for (const modelId of examAiModelVisibleItems) {
+        const row = document.createElement("button");
+        row.type = "button";
+        row.textContent = modelId;
+        row.style.cssText =
+          "border:0;background:#fff;color:#0f172a;font-size:12px;line-height:1.45;padding:10px 12px;text-align:left;cursor:pointer;border-bottom:1px solid #eef2f7;";
+        row.addEventListener("mouseenter", () => {
+          row.style.background = "#eff6ff";
+          row.style.color = "#1d4ed8";
+        });
+        row.addEventListener("mouseleave", () => {
+          row.style.background = "#fff";
+          row.style.color = "#0f172a";
+        });
+        row.addEventListener("click", () => {
+          aiModelField.input.value = modelId;
+          readExamAiDraftFromInputs();
+          hideExamAiModelDropdown();
+          setExamAiStatus(`已选择模型 ${modelId}`, "success");
+        });
+        aiModelDropdown.appendChild(row);
+      }
+      aiModelDropdown.style.display = "flex";
+      syncExamAiModelDropdownPosition();
+    }
+    function getExamAiModelSearchSource() {
+      if (examAiModelAllItems.length) return examAiModelAllItems.slice();
+      const currentBaseUrl = normalizeBaseUrl(aiBaseField.input.value);
+      if (
+        currentBaseUrl &&
+        customExamAiModelsCache.key &&
+        customExamAiModelsCache.key.includes(currentBaseUrl) &&
+        Array.isArray(customExamAiModelsCache.list)
+      ) {
+        return customExamAiModelsCache.list.slice();
+      }
+      return [];
+    }
+    function updateExamAiModelDropdownByKeyword() {
+      const keyword = String(aiModelField.input.value || "")
+        .trim()
+        .toLowerCase();
+      const source = getExamAiModelSearchSource();
+      if (!source.length) {
+        hideExamAiModelDropdown();
+        return;
+      }
+      if (!keyword) {
+        renderExamAiModelDropdown(source);
+        return;
+      }
+      const filtered = source.filter((item) =>
+        String(item || "").toLowerCase().includes(keyword),
+      );
+      if (!filtered.length) {
+        hideExamAiModelDropdown();
+        return;
+      }
+      renderExamAiModelDropdown(filtered);
+    }
+    function closeExamAiConfigModal() {
+      hideExamAiModelDropdown();
+      examAiConfigModal.style.display = "none";
+    }
+    function openExamAiConfigModal() {
+      examAiModelVisibleItems = [];
+      applyExamAiDraftToInputs(loadCustomExamAiConfig(), { syncStatus: true });
+      examAiConfigModal.style.display = "flex";
+      window.setTimeout(() => {
+        try {
+          if (examAiConfigDraft.enabled) aiBaseField.input.focus();
+          else examAiEnableRow.focus();
+        } catch {}
+      }, 0);
+    }
+    async function handleExamAiModelFetch(force = false) {
+      const config = readExamAiDraftFromInputs();
+      if (!config.enabled) {
+        setExamAiStatus("请先开启自定义 AI", "warning");
+        return;
+      }
+      setExamAiModalBusy(true, "models");
+      setExamAiStatus("正在拉取模型列表...", "info");
+      try {
+        const list = await fetchCustomExamAiModels(config, { force });
+        examAiModelAllItems = Array.isArray(list) ? list.slice() : [];
+        examAiModelVisibleItems = [];
+        hideExamAiModelDropdown();
+        setExamAiStatus(
+          list.length ? `已获取 ${list.length} 个模型` : "接口已连通，但未返回模型",
+          list.length ? "success" : "warning",
+        );
+      } catch (err) {
+        hideExamAiModelDropdown();
+        setExamAiStatus(
+          String((err && err.message) || err || "模型列表获取失败"),
+          "error",
+        );
+      } finally {
+        setExamAiModalBusy(false);
+        applyExamAiDraftToInputs(examAiConfigDraft, { syncStatus: false });
+      }
+    }
+    async function handleExamAiConnectionTest() {
+      const config = readExamAiDraftFromInputs();
+      if (!config.enabled) {
+        setExamAiStatus("请先开启自定义 AI", "warning");
+        return;
+      }
+      setExamAiModalBusy(true, "test");
+      setExamAiStatus("正在测试连通性...", "info");
+      try {
+        const result = await testCustomExamAiConnection(config);
+        if (!config.model && Array.isArray(result.models) && result.models[0]) {
+          aiModelField.input.value = String(result.models[0] || "");
+          readExamAiDraftFromInputs();
+        }
+        examAiModelAllItems = Array.isArray(result.models)
+          ? result.models.slice()
+          : [];
+        examAiModelVisibleItems = [];
+        hideExamAiModelDropdown();
+        setExamAiStatus(String(result.message || "连通成功"), "success");
+      } catch (err) {
+        hideExamAiModelDropdown();
+        setExamAiStatus(
+          String((err && err.message) || err || "连通性测试失败"),
+          "error",
+        );
+      } finally {
+        setExamAiModalBusy(false);
+        applyExamAiDraftToInputs(examAiConfigDraft, { syncStatus: false });
+      }
+    }
+    function saveExamAiConfigFromPanel() {
+      const config = readExamAiDraftFromInputs();
+      const saved = saveCustomExamAiConfig(config);
+      updateExamAiConfigButtonVisual(saved);
+      closeExamAiConfigModal();
+      panelSetExamStatus(
+        saved.enabled
+          ? isCustomExamAiEnabled(saved)
+            ? "自定义 AI 设置已保存"
+            : "自定义 AI 已开启，但配置未完整"
+          : "自定义 AI 已关闭",
+      );
+    }
     let manualExamQueryBusy = false;
     btnExamSetToken.addEventListener("click", () => {
       openExamTokenModal();
     });
     btnExamTokenSave.addEventListener("click", () => {
       saveExamQueryTokenFromPanel();
+    });
+    btnExamAiConfig.addEventListener("click", () => {
+      openExamAiConfigModal();
     });
     examTokenModalInput.addEventListener("keydown", (e) => {
       if (e.key === "Escape") {
@@ -14371,6 +15190,76 @@
     examTokenModal.addEventListener("click", (e) => {
       if (e.target === examTokenModal) closeExamTokenModal();
     });
+    examAiEnableRow.addEventListener("click", () => {
+      examAiConfigDraft.enabled = !examAiConfigDraft.enabled;
+      applyExamAiDraftToInputs(examAiConfigDraft);
+    });
+    btnExamAiCancel.addEventListener("click", () => {
+      closeExamAiConfigModal();
+    });
+    btnExamAiSave.addEventListener("click", () => {
+      saveExamAiConfigFromPanel();
+    });
+    btnExamAiTest.addEventListener("click", () => {
+      handleExamAiConnectionTest().catch(() => {});
+    });
+    btnExamAiLoadModels.addEventListener("click", () => {
+      handleExamAiModelFetch(true).catch(() => {});
+    });
+    aiModelField.input.addEventListener("focus", () => {
+      updateExamAiModelDropdownByKeyword();
+    });
+    aiModelField.input.addEventListener("input", () => {
+      readExamAiDraftFromInputs();
+      updateExamAiModelDropdownByKeyword();
+    });
+    [aiBaseField.input, aiKeyField.input].forEach((input) => {
+      input.addEventListener("input", () => {
+        readExamAiDraftFromInputs();
+      });
+    });
+    examAiConfigModal.addEventListener("click", (e) => {
+      if (e.target === examAiConfigModal) closeExamAiConfigModal();
+    });
+    examAiConfigCard.addEventListener("click", (e) => {
+      e.stopPropagation();
+    });
+    examAiConfigBody.addEventListener("scroll", () => {
+      syncExamAiModelDropdownPosition();
+    });
+    document.addEventListener(
+      "pointerdown",
+      (e) => {
+        if (!examAiConfigModal || examAiConfigModal.style.display === "none")
+          return;
+        if (aiModelField.wrap.contains(e.target)) return;
+        if (aiModelDropdown.contains(e.target)) return;
+        hideExamAiModelDropdown();
+      },
+      true,
+    );
+    examAiConfigModal.addEventListener("keydown", (e) => {
+      if (e.key === "Escape") {
+        e.preventDefault();
+        hideExamAiModelDropdown();
+        closeExamAiConfigModal();
+        return;
+      }
+      if ((e.ctrlKey || e.metaKey) && e.key.toLowerCase() === "enter") {
+        e.preventDefault();
+        saveExamAiConfigFromPanel();
+      }
+    });
+    window.addEventListener("resize", () => {
+      syncExamAiModelDropdownPosition();
+    });
+    window.addEventListener(
+      "scroll",
+      () => {
+        syncExamAiModelDropdownPosition();
+      },
+      true,
+    );
     btnExamQueryAnswer.addEventListener("click", async () => {
       if (manualExamQueryBusy || examAnswerBusy) {
         panelSetExamStatus("题库查询中：请稍候...");
