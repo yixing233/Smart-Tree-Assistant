@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         智慧树习题助手
 // @namespace    https://ai-smart-course-student-pro.zhihuishu.com/
-// @version      0.5.8
+// @version      0.5.9
 // @downloadURL  https://raw.githubusercontent.com/yixing233/Smart-Tree-Assistant/main/zhihuishu-exam-helper.user.js
 // @updateURL    https://raw.githubusercontent.com/yixing233/Smart-Tree-Assistant/main/zhihuishu-exam-helper.user.js
 // @description  一个基于智慧树AI课程平台开发的脚本, 能够自动完成所有习题, 如有bug, 请前往GitHub提交issues.
@@ -67,7 +67,7 @@
   const EXAM_CACHE_MAX_QUESTION_ENTRIES = 1500;
   const EXAM_QUESTION_ROW_CONCURRENCY = 6;
   const EXAM_QUESTION_DETAIL_CONCURRENCY = 10;
-  const SCRIPT_CURRENT_VERSION = "0.5.8";
+  const SCRIPT_CURRENT_VERSION = "0.5.9";
   const SCRIPT_UPDATE_URL =
     "https://raw.githubusercontent.com/yixing233/Smart-Tree-Assistant/main/zhihuishu-exam-helper.user.js";
   const SCRIPT_DOWNLOAD_URL = SCRIPT_UPDATE_URL;
@@ -6535,7 +6535,7 @@
     sponsorTitle.style.cssText =
       "color:#9d174d;font-size:12px;font-weight:700;line-height:1.2;margin-bottom:8px;text-align:center;";
     const sponsorImageUrl =
-      "https://file.157342.xyz/api/share-bundles/vCHE39oDMP05uxXKA_E-GE86/files/4/download/%E8%B5%9E%E8%B5%8F%E7%A0%81.png";
+      "https://raw.githubusercontent.com/yixing233/Smart-Tree-Assistant/main/assets/%E8%B5%9E%E8%B5%8F%E7%A0%81.png";
     const sponsorImg = document.createElement("img");
     sponsorImg.src = sponsorImageUrl;
     sponsorImg.alt = "赞赏码";
