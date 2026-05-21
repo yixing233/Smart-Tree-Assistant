@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         智慧树助手
 // @namespace    https://ai-smart-course-student-pro.zhihuishu.com/
-// @version      0.5.3
+// @version      0.5.4
 // @description  一个基于智慧树AI课程平台开发的脚本, 能够自动完成所有必学内容, 如有bug, 请前往GitHub提交issues.
 // @author       xchengb
 // @match        https://ai-smart-course-student-pro.zhihuishu.com/learnPage/*
@@ -35,7 +35,7 @@
   const VIDEO_CONTROL_AUTO_MUTE_PREFIX = "zs-knowledge-video-auto-mute";
   const VIDEO_SEEK_HINT_PREFIX = "zs-knowledge-video-seek-hint";
   const AUTOMATION_MASK_PREFIX = "zs-knowledge-automation-mask";
-  const SCRIPT_CURRENT_VERSION = "0.5.3";
+const SCRIPT_CURRENT_VERSION = "0.5.4";
   const SCRIPT_UPDATE_URL =
     "https://raw.githubusercontent.com/yixing233/Smart-Tree-Assistant/main/zhihuishu-knowledge-helper.user.js";
   const SCRIPT_DOWNLOAD_URL = SCRIPT_UPDATE_URL;
@@ -5208,8 +5208,8 @@
     sponsorTitle.textContent = "赞助支持";
     sponsorTitle.style.cssText =
       "color:#9d174d;font-size:12px;font-weight:700;line-height:1.2;margin-bottom:8px;text-align:center;";
-    const sponsorImageUrl =
-      "https://file.157342.xyz/api/share-bundles/mNX4DsdHqvNugjm7t6ejJ8Mn/files/11/download/%E8%B5%9E%E8%B5%8F%E7%A0%81.png";
+const sponsorImageUrl =
+"https://raw.githubusercontent.com/yixing233/Smart-Tree-Assistant/main/assets/%E8%B5%9E%E8%B5%8F%E7%A0%81.png";
     const sponsorImg = document.createElement("img");
     sponsorImg.src = sponsorImageUrl;
     sponsorImg.alt = "赞赏码";
